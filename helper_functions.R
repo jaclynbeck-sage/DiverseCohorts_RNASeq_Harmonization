@@ -1,0 +1,408 @@
+library(synapser)
+library(ggplot2)
+library(ggforce)
+library(viridis)
+library(patchwork)
+library(dplyr)
+library(stringr)
+library(biomaRt)
+library(GenomicRanges)
+library(BSgenome)
+
+download_metadata <- function() {
+  synLogin()
+
+  ind <- synGet("syn51757646",
+                downloadLocation = "downloads",
+                ifcollision = "overwrite.local")$path |>
+    read.csv()
+  bio <- synGet("syn51757645",
+                downloadLocation = "downloads",
+                ifcollision = "overwrite.local")$path |>
+    read.csv()
+  assay <- synGet("syn51757643",
+                  downloadLocation = "downloads",
+                  ifcollision = "overwrite.local")$path |>
+    read.csv()
+
+  duplicates_remove <- c("Div_487", "Div_498", "Div_500", "Div_503", "Div_508",
+                         "Div_509", "Div_545")
+
+  metadata <- assay |>
+    merge(bio) |>
+    merge(ind) |>
+    mutate(specimenID = make.names(specimenID)) |>
+    # Remove 7 duplicate Rush samples that are in batch B74
+    subset(!(specimenID %in% c(duplicates_remove) & sequencingBatch == "B74")) |>
+    # Add some extra statistics
+    mutate(
+      RINbin = case_when(RIN <= 2.5 ~ "0 to 2.5",
+                         RIN > 2.5 & RIN <= 5 ~ "2.6 to 5",
+                         RIN > 5 & RIN <= 7.5 ~ "5.1 to 7.5",
+                         RIN > 7.5 ~ "7.6+"),
+      apoe4Status = case_when(grepl("4", apoeGenotype) ~ "True",
+                              apoeGenotype == "missing or unknown" ~ "missing or unknown",
+                              .default = "False"),
+      ageDeathNumeric = suppressWarnings(as.numeric(ageDeath)),
+      pmiNumeric = suppressWarnings(as.numeric(PMI)),
+      ageBin = case_when(ageDeathNumeric < 65 ~ "Under 65",
+                         ageDeathNumeric >= 65 & ageDeathNumeric < 70 ~ "65 to 69",
+                         ageDeathNumeric >= 70 & ageDeathNumeric < 75 ~ "70 to 74",
+                         ageDeathNumeric >= 75 & ageDeathNumeric < 80 ~ "75 to 79",
+                         ageDeathNumeric >= 80 & ageDeathNumeric < 85 ~ "80 to 74",
+                         ageDeathNumeric >= 85 & ageDeathNumeric < 90 ~ "85 to 90",
+                         .default = ageDeath),
+      pmiBin = case_when(pmiNumeric < 10 ~ "Under 10",
+                         pmiNumeric >= 10 & pmiNumeric < 20 ~ "10 to 19",
+                         pmiNumeric >= 20 & pmiNumeric < 30 ~ "20 to 29",
+                         pmiNumeric >= 30 ~ "30+",
+                         .default = PMI)
+    )
+}
+
+
+download_rsem <- function(syn_id) {
+  synLogin()
+  synGet(syn_id,
+         downloadLocation = "downloads",
+         ifcollision = "overwrite.local")$path |>
+    read.table(header = TRUE) |>
+    dplyr::select(-transcript_id.s.) |>
+    # Remove Ensembl version from Ensembl IDs
+    mutate(gene_id = str_replace(gene_id, "\\.[0-9]+", "")) |>
+    tibble::column_to_rownames("gene_id")
+}
+
+
+lognorm <- function(data) {
+  data <- sweep(data, 2, colSums(data), "/") * 1e6
+  log2(data + 0.5) |>
+    as.matrix()
+}
+
+
+validate_sex <- function(metadata, data) {
+  sex_genes <- c(XIST = "ENSG00000229807", UTY = "ENSG00000183878")
+
+  sex_check <- metadata |>
+    dplyr::select(specimenID, sex) |>
+    merge(
+      t(data[sex_genes, ]),
+      by.x = "specimenID", by.y = "row.names",
+      sort = FALSE
+    ) |>
+    dplyr::rename(XIST = ENSG00000229807, UTY = ENSG00000183878)
+
+  plt1 <- ggplot(sex_check, aes(x = sex, y = XIST, fill = sex)) +
+    geom_boxplot(width = 0.25, outliers = FALSE) +
+    geom_jitter(size = 0.5) +
+    theme_bw() +
+    theme(legend.position = "bottom")
+
+  plt2 <- ggplot(sex_check, aes(x = sex, y = UTY, fill = sex)) +
+    geom_boxplot(width = 0.25, outliers = FALSE) +
+    geom_jitter(size = 0.5) +
+    theme_bw() +
+    theme(legend.position = "bottom")
+
+  plt3 <- ggplot(sex_check, aes(x = XIST, y = UTY, color = sex)) +
+    geom_point(size = 0.5) +
+    geom_hline(yintercept = log2(1.5)) + # 1 CPM
+    theme_bw() +
+    theme(legend.position = "bottom")
+
+  print(plt1 + plt2 + plt3)
+
+  # TODO look at how sageseqr used PCA to do this
+
+  # All males are > 2.5 log2-CPM, but any female samples > the threshold below
+  # should be suspect.
+  sex_check$est_sex <- case_when(
+    sex_check$UTY > log2(1.5) ~ "male",
+    .default = "female"
+  )
+
+  metadata$sex_valid <- sex_check$sex == sex_check$est_sex
+
+  metadata
+}
+
+
+outlier_pca <- function(metadata, data, n_mads = 5) {
+  metadata$pca_valid <- FALSE
+
+  # TODO there's some batch effects affecting the PCA
+  for (tiss in unique(metadata$tissue)) {
+    meta_tissue <- subset(metadata, tissue == tiss)
+    data_tissue <- data[, meta_tissue$specimenID]
+
+    pc_tissue <- prcomp(data_tissue)
+    pc_df <- cbind(pc_tissue$rotation[, c("PC1", "PC2")], meta_tissue)
+
+    med_pc1 <- median(pc_df$PC1)
+    mad_pc1 <- mad(pc_df$PC1) * n_mads
+    med_pc2 <- median(pc_df$PC2)
+    mad_pc2 <- mad(pc_df$PC2) * n_mads
+
+    # Formula for an ellipse centered at (0,0) is: (x^2 / a^2) + (y^2 / b^2) = 1
+    in_ellipse <- (pc_df$PC1 - med_pc1)^2 / mad_pc1^2 +
+      (pc_df$PC2 - med_pc2)^2 / mad_pc2^2
+
+    meta_tissue$pca_valid <- in_ellipse <= 1
+
+    plt <- ggplot(pc_df, aes(x = PC1, y = PC2)) +
+      geom_point(aes(color = sequencingBatch)) + #color = ifelse(meta_tissue$pca_valid, "black", "red")) +
+      geom_ellipse(aes(x0 = med_pc1, y0 = med_pc2,
+                       a = mad_pc1, b = mad_pc2, angle = 0)) +
+      theme_bw() +
+      theme(legend.position = "bottom") +
+      ggtitle(tiss)
+
+    # Something about geom_ellipse doesn't work right with patchwork, so we
+    # print each plot separately instead of all in a row
+    print(plt)
+
+    meta_tissue <- subset(meta_tissue, pca_valid)
+    metadata$pca_valid[metadata$specimenID %in% meta_tissue$specimenID] <- TRUE
+  }
+
+  metadata
+}
+
+
+validate_DV200 <- function(metadata) {
+  plt1 <- ggplot(metadata, aes(x = tissue, y = RIN, fill = tissue)) +
+    geom_boxplot(outliers = FALSE) +
+    geom_jitter(size = 0.5) +
+    theme_bw()
+
+  plt2 <- ggplot(metadata, aes(x = tissue, y = DV200, fill = tissue)) +
+    geom_boxplot(outliers = FALSE) +
+    geom_jitter(size = 0.5) +
+    theme_bw()
+
+  plt3 <- ggplot(metadata, aes(x = RIN, y = DV200, color = tissue)) +
+    geom_jitter(size = 0.5) +
+    theme_bw()
+
+  plt4 <- ggplot(metadata, aes(x = rank(DV200), y = DV200, color = tissue)) +
+    geom_point(size = 0.5) +
+    geom_hline(yintercept = 60) +
+    theme_bw()
+
+  print((plt1 + plt2) / (plt3 + plt4))
+
+
+  # TODO arbitrary threshold, need to look at other data sources. 80 is where
+  # the decrease starts.
+  metadata$dv200_valid <- metadata$DV200 > 60
+
+  metadata
+}
+
+get_gc_content_biomart <- function(gene_list) {
+  mart <- biomaRt::useEnsembl(biomart = "ensembl",
+                              dataset = "hsapiens_gene_ensembl",
+                              version = 109)
+
+  # Note: It is possible to query attribute "percentage_gene_gc_content",
+  # however the percent returned by Biomart is for the entire gene sequence,
+  # including introns. We want the GC content of exons only.
+  gene_info <- biomaRt::getBM(
+    attributes = c(
+      "ensembl_gene_id", "ensembl_transcript_id", "ensembl_exon_id",
+      "exon_chrom_start",  "exon_chrom_end", "strand", "start_position",
+      "end_position", "external_gene_name", "chromosome_name", "gene_biotype",
+      "transcript_biotype"
+    ),
+    filters = "ensembl_gene_id",
+    values = gene_list,
+    mart = mart
+  )
+
+  gene_info$hgnc_symbol <- gene_info$external_gene_name
+
+  # Fix strand to be + and - to work with GenomicRanges
+  gene_info$strand <- as.character(gene_info$strand) |>
+    str_replace("-1", "-") |>
+    str_replace("1", "+")
+
+  gene_info <- gene_info |>
+    # "start_position" is gene start
+    mutate(start = case_match(strand,
+                              "+" ~ exon_chrom_start - start_position + 1,
+                              "-" ~ end_position - exon_chrom_end + 1),
+           end = case_match(strand,
+                            "+" ~ exon_chrom_end - start_position + 1,
+                            "-" ~ end_position - exon_chrom_start + 1))
+
+  seqs <- getSequence(id = unique(gene_info$ensembl_gene_id),
+                      type = "ensembl_gene_id",
+                      seqType = "gene_exon_intron",
+                      mart = mart)
+
+  seqs2 <- DNAStringSet(seqs$gene_exon_intron)
+  names(seqs2) <- seqs$ensembl_gene_id
+
+  #grange <- GenomicRanges::makeGRangesListFromDataFrame(
+  #  gene_info,
+  #  split.field = "ensembl_gene_id",
+  #  start.field = "exon_chrom_start",
+  #  end.field = "exon_chrom_end"
+  #)
+
+  grange <- GenomicRanges::makeGRangesFromDataFrame(
+    gene_info,
+    keep.extra.columns = TRUE,
+    seqnames.field = "ensembl_gene_id"
+  )
+  grange$ensembl_gene_id <- as.character(seqnames(grange))
+
+  #genes <- GenomicRanges::reduce(grange)
+  #gene_length <- sum(width(genes))
+
+  gene_final <- .calculate_gc_content(grange, seqs2)
+
+  #gene_coords <- gene_info |>
+  #  dplyr::select(ensembl_gene_id, start_position, end_position) |>
+  #  distinct() |>
+  #  merge(as.data.frame(genes), by.x = "ensembl_gene_id", by.y = "group_name") |>
+    # "start" is reduced exon coordinates start, "start_position" is gene start
+  #  mutate(start = start - start_position + 1,
+  #         end = end - start_position + 1)
+
+  #res <- sapply(seqs$ensembl_gene_id, function(gene_id) {
+  #  sequence <- seqs$gene_exon_intron[seqs$ensembl_gene_id == gene_id] |>
+  #    DNAString()
+  #  gene <- subset(gene_coords, ensembl_gene_id == gene_id)
+
+    # Coordinates are with respect to the positive strand. If this gene is on
+    # the reverse strand, the sequence returned by Biomart is the reverse strand
+    # sequence, which means it needs to be reverse-complemented to turn it into
+    # positive strand coordinates.
+  #  if (unique(gene$strand) == "-") {
+  #    sequence <- reverseComplement(sequence)[IRanges(gene$start, gene$end)]
+  #  } else {
+  #    sequence <- sequence[IRanges(gene$start, gene$end)]
+  #  }
+
+  #  # If everything worked, this should never happen
+  #  if(length(sequence) != gene_length[gene_id]) {
+  #    print(gene_id)
+  #  }
+
+  #  freq <- alphabetFrequency(sequence)
+  #  sum(freq[c("C","G")]) / sum(freq[c("A", "C", "G", "T")])
+  #})
+}
+
+
+# Alternate to biomart ---------------------------------------------------------
+
+# Uses original GTF and FASTA files as input instead of querying Biomart. This
+# is the preferred method since Biomart doesn't keep annotations on all genes
+# in the reference and it occasionally doesn't respond to requests.
+
+# GTF file: https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_43/gencode.v43.primary_assembly.annotation.gtf.gz
+# FASTA file: https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_43/GRCh38.primary_assembly.genome.fa.gz
+get_gc_content_gtf <- function(gtf_file, fasta_file) {
+  message("Importing GTF and FASTA data...")
+  # Import GTF and FASTA once, use for both gene-level and transcript-level calculations
+  gtf <- rtracklayer::import(gtf_file,
+                             format = "gtf",
+                             feature.type = "exon")
+
+  # Some renames to match Biomart
+  gtf$ensembl_gene_id <- gtf$gene_id
+  gtf$transcript_id <- gtf$transcript_id
+  gtf$chromosome_name <- as.character(seqnames(gtf))
+  gtf$hgnc_symbol <- gtf$gene_name
+  gtf$gene_biotype <- gtf$gene_type
+  gtf$transcript_biotype <- gtf$transcript_type
+
+  fasta <- rtracklayer::import(fasta_file,
+                               format = "fasta",
+                               type = "DNA")
+  # Change chromosome names from things like "chr2 2" to "chr2" to match
+  # GTF file
+  names(fasta) <- str_replace(names(fasta), " .*", "")
+
+  message("Calculating length and GC content for each gene...")
+  gene_data <- .calculate_gc_content(gtf, fasta)
+
+  message("Calculating length and GC content for each transcript...")
+  transcript_data <- .calculate_gc_content(gtf, fasta, by_transcript = TRUE)
+
+  return(list("genes" = gene_data, "transcripts" = transcript_data))
+}
+
+
+.calculate_gc_content <- function(ranges_obj, sequences, by_transcript = FALSE) {
+  # Genes will be a GRangesList where each list item is a GRanges object for a
+  # specific gene [or transcript]. The GRanges object will have one or more ranges in it
+  # corresponding to the de-duplicated ranges for all exonic regions in that
+  # gene/transcript
+  id_field <- ifelse(by_transcript, "ensembl_transcript_id", "ensembl_gene_id")
+  genes <- GenomicRanges::split(ranges_obj,
+                                f = mcols(ranges_obj)[[id_field]]) |>
+    GenomicRanges::reduce()
+
+  gene_length <- sum(width(genes))
+
+  # Creates a DNAStringSetList where each list item is a set of sequences
+  # (DNAStringSet) for a specific gene, corresponding to the exonic regions in
+  # that gene
+  exon_seqs <- getSeq(sequences, genes)
+
+  gc <- sapply(exon_seqs, function(gene) {
+    # Count all bases across all exonic sequences for this single gene
+    gc_counts <- colSums(alphabetFrequency(gene))
+
+    # Proportion of C and G bases. Some values in the sequence might be "N" and
+    # we don't count "N" in the total so we can't use the calculated gene length
+    # in the denominator
+    sum(gc_counts[c("C", "G")]) / sum(gc_counts[c("A", "C", "G", "T")])
+  })
+
+  if (by_transcript) {
+    # Collapse ranges_obj to transcript level and saves some extra fields
+    fields_keep <- c("ensembl_gene_id", "ensembl_transcript_id", "hgnc_symbol",
+                     "gene_biotype", "transcript_biotype", "chromosome_name")
+  } else {
+    # No transcript ID, collapses to gene level
+    fields_keep <- c("ensembl_gene_id", "hgnc_symbol", "gene_biotype",
+                     "chromosome_name")
+  }
+
+  # Get data frame with one row per gene [or transcript] and add the calculated
+  # length and GC content. Some columns are re-named to match how they are
+  # named in Biomart
+  gene_final <- ranges_obj |>
+    as.data.frame() |>
+    dplyr::select(all_of(fields_keep)) |>
+    distinct() |>
+    # Make sure gene length and gc are in the same order as the IDs in this data frame
+    mutate(
+      gene_length = gene_length[.data[[id_field]]],
+      percent_gc_content = gc[.data[[id_field]]]
+    ) |>
+    # Sort for neatness and easier diff in case of updates
+    arrange(ensembl_gene_id)
+
+  if (by_transcript) {
+    # Change "gene_length" to "transcript_length"
+    gene_final <- gene_final |>
+      dplyr::rename(transcript_length = gene_length)
+
+    out_file <- file.path("data", "transcript_lengths_gc.csv")
+  } else {
+    out_file <- file.path("data", "gene_lengths_gc.csv")
+  }
+
+  # TODO some HGNC symbols are just the Ensembl ID, they should be blank instead
+
+  # Save results for later
+  write.csv(gene_final, out_file, row.names = FALSE, quote = FALSE)
+
+  return(gene_final)
+}
