@@ -250,8 +250,6 @@ get_gc_content_biomart <- function(gene_list) {
   )
   grange$ensembl_gene_id <- as.character(seqnames(grange))
 
-  gene_final <- .calculate_gc_content(grange, seqs2)
-
   message("Calculating length and GC content for each gene...")
   gene_data <- .calculate_gc_content(grange, seqs2)
 
