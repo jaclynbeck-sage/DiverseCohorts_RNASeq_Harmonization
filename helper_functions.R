@@ -63,9 +63,7 @@ download_metadata <- function() {
 
 download_rsem <- function(syn_id) {
   synLogin()
-  synGet(syn_id,
-         downloadLocation = "downloads",
-         ifcollision = "overwrite.local")$path |>
+  synGet(syn_id, downloadLocation = "downloads")$path |>
     read.table(header = TRUE) |>
     dplyr::select(-transcript_id.s.) |>
     # Remove Ensembl version from Ensembl IDs
@@ -131,12 +129,11 @@ validate_sex <- function(metadata, data) {
 outlier_pca <- function(metadata, data, n_mads = 5) {
   metadata$pca_valid <- FALSE
 
-  # TODO there's some batch effects affecting the PCA
   for (tiss in unique(metadata$tissue)) {
     meta_tissue <- subset(metadata, tissue == tiss)
     data_tissue <- data[, meta_tissue$specimenID]
 
-    pc_tissue <- prcomp(data_tissue)
+    pc_tissue <- prcomp(data_tissue, scale. = TRUE)
     pc_df <- cbind(pc_tissue$rotation[, c("PC1", "PC2")], meta_tissue)
 
     med_pc1 <- median(pc_df$PC1)
@@ -228,7 +225,9 @@ get_gc_content_biomart <- function(gene_list) {
     str_replace("1", "+")
 
   gene_info <- gene_info |>
-    # "start_position" is gene start
+    # "start_position" is gene start. If the gene is on the reverse strand,
+    # coordinates need to be reversed since the sequence returned by Biomart
+    # is the reverse complement instead of the forward strand.
     mutate(start = case_match(strand,
                               "+" ~ exon_chrom_start - start_position + 1,
                               "-" ~ end_position - exon_chrom_end + 1),
@@ -244,13 +243,6 @@ get_gc_content_biomart <- function(gene_list) {
   seqs2 <- DNAStringSet(seqs$gene_exon_intron)
   names(seqs2) <- seqs$ensembl_gene_id
 
-  #grange <- GenomicRanges::makeGRangesListFromDataFrame(
-  #  gene_info,
-  #  split.field = "ensembl_gene_id",
-  #  start.field = "exon_chrom_start",
-  #  end.field = "exon_chrom_end"
-  #)
-
   grange <- GenomicRanges::makeGRangesFromDataFrame(
     gene_info,
     keep.extra.columns = TRUE,
@@ -258,42 +250,15 @@ get_gc_content_biomart <- function(gene_list) {
   )
   grange$ensembl_gene_id <- as.character(seqnames(grange))
 
-  #genes <- GenomicRanges::reduce(grange)
-  #gene_length <- sum(width(genes))
-
   gene_final <- .calculate_gc_content(grange, seqs2)
 
-  #gene_coords <- gene_info |>
-  #  dplyr::select(ensembl_gene_id, start_position, end_position) |>
-  #  distinct() |>
-  #  merge(as.data.frame(genes), by.x = "ensembl_gene_id", by.y = "group_name") |>
-    # "start" is reduced exon coordinates start, "start_position" is gene start
-  #  mutate(start = start - start_position + 1,
-  #         end = end - start_position + 1)
+  message("Calculating length and GC content for each gene...")
+  gene_data <- .calculate_gc_content(grange, seqs2)
 
-  #res <- sapply(seqs$ensembl_gene_id, function(gene_id) {
-  #  sequence <- seqs$gene_exon_intron[seqs$ensembl_gene_id == gene_id] |>
-  #    DNAString()
-  #  gene <- subset(gene_coords, ensembl_gene_id == gene_id)
+  message("Calculating length and GC content for each transcript...")
+  transcript_data <- .calculate_gc_content(grange, seqs2, by_transcript = TRUE)
 
-    # Coordinates are with respect to the positive strand. If this gene is on
-    # the reverse strand, the sequence returned by Biomart is the reverse strand
-    # sequence, which means it needs to be reverse-complemented to turn it into
-    # positive strand coordinates.
-  #  if (unique(gene$strand) == "-") {
-  #    sequence <- reverseComplement(sequence)[IRanges(gene$start, gene$end)]
-  #  } else {
-  #    sequence <- sequence[IRanges(gene$start, gene$end)]
-  #  }
-
-  #  # If everything worked, this should never happen
-  #  if(length(sequence) != gene_length[gene_id]) {
-  #    print(gene_id)
-  #  }
-
-  #  freq <- alphabetFrequency(sequence)
-  #  sum(freq[c("C","G")]) / sum(freq[c("A", "C", "G", "T")])
-  #})
+  return(list("genes" = gene_data, "transcripts" = transcript_data))
 }
 
 
@@ -337,6 +302,48 @@ get_gc_content_gtf <- function(gtf_file, fasta_file) {
 }
 
 
+# Helper function to calculate GC content and gene [or transcript] length.
+#
+# Arguments:
+#   ranges_obj - A `GRanges` object containing the start and end coordinates of
+#     each exon for each gene. Overlapping exon coordinates should be merged
+#     with `reduce()` first. This object must contain either an
+#     `ensembl_transcript_id` and/or `ensembl_gene_id` metadata column,
+#     depending on whether GC content/length are being calculated for
+#     transcripts or for genes. It should also have an `hgnc_symbol` column.
+#     Values in `seqnames(ranges_obj)` must match the values in
+#     `names(sequences)`.
+#   sequences - a `DNAStringSet` object where each item is a `DNAString`
+#     containing a sequence to subset exon regions from. `names(sequences)`
+#     must match the values in `seqnames(ranges_obj)`.
+#
+# If the original input was imported from GTF and FASTA files, each `DNAString`
+# in `sequences` should be the sequence of an entire chromosome, and the
+# coordinates in `ranges_obj` should be relative to the start of the chromosome,
+# which is the default in GTF files.
+#
+# If the original input was from Biomart, each `DNAString` in `sequences` should
+# be the sequence of a single gene, and the coordinates in `ranges_obj` should
+# be relative to the start of the gene. Note that for genes on the reverse
+# strand, Biomart returns the gene sequence as the reverse complement of the
+# reference strand, so that position 1 on the reference strand is position
+# <gene_length> on the reverse strand, and position <gene_length> of the
+# reference strand is position 1 of the reverse strand. However, the coordinates
+# given by Biomart are relative to the reference sequence. This means that one
+# of two adjustments need to be made *prior* to calling this function.
+# Either:
+#   1. `sequences` needs to be updated so that the sequence for every gene on
+#      the negative/reverse strand is reverse-complemented,
+# or
+#   2. coordinates for exons on the reverse strand need to be adjusted to be
+#      relative to the start of reverse complement sequence, e.g. if Biomart
+#      returns coordinates `start = 3` and `end = 10`, the start position is
+#      now the *end* coordinate relative to the reverse complement strand and is
+#      adjusted as position <gene_length - 3 + 1>. The original end position is
+#      now the start coordinate and is adjusted as <gene_length - 10 + 1>.
+#
+# No such adjustment is necessary for data from GTF and FASTA files, as the
+# sequences are always the reference strand.
 .calculate_gc_content <- function(ranges_obj, sequences, by_transcript = FALSE) {
   # Genes will be a GRangesList where each list item is a GRanges object for a
   # specific gene [or transcript]. The GRanges object will have one or more ranges in it
@@ -374,6 +381,8 @@ get_gc_content_gtf <- function(gtf_file, fasta_file) {
                      "chromosome_name")
   }
 
+  fields_keep <- intersect(fields_keep, colnames(mcols(ranges_obj)))
+
   # Get data frame with one row per gene [or transcript] and add the calculated
   # length and GC content. Some columns are re-named to match how they are
   # named in Biomart
@@ -384,7 +393,13 @@ get_gc_content_gtf <- function(gtf_file, fasta_file) {
     # Make sure gene length and gc are in the same order as the IDs in this data frame
     mutate(
       gene_length = gene_length[.data[[id_field]]],
-      percent_gc_content = gc[.data[[id_field]]]
+      percent_gc_content = gc[.data[[id_field]]],
+      # Some HGNC symbols might have been assigned the Ensembl ID because there's
+      # no symbol for that gene. This fixes those to be blank.
+      hgnc_symbol = case_when(
+        grepl("ENSG00", hgnc_symbol) ~ "",
+        .default = hgnc_symbol
+      )
     ) |>
     # Sort for neatness and easier diff in case of updates
     arrange(ensembl_gene_id)
@@ -398,8 +413,6 @@ get_gc_content_gtf <- function(gtf_file, fasta_file) {
   } else {
     out_file <- file.path("data", "gene_lengths_gc.csv")
   }
-
-  # TODO some HGNC symbols are just the Ensembl ID, they should be blank instead
 
   # Save results for later
   write.csv(gene_final, out_file, row.names = FALSE, quote = FALSE)

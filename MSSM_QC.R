@@ -9,6 +9,8 @@ counts <- counts[, metadata$specimenID]
 
 stopifnot(all(duplicated(metadata$specimenID) == FALSE))
 
+orig_size <- ncol(counts)
+
 # Normalize data for PCA
 data_orig <- DGEList(counts, samples = metadata, remove.zeros = TRUE)
 data_orig <- normLibSizes(data_orig, method = "TMM")
@@ -35,6 +37,8 @@ print(table(metadata$tissue, metadata$valid))
 
 metadata <- subset(metadata, valid == TRUE)
 counts <- counts[, metadata$specimenID]
+
+message(str_glue("{ncol(counts)} of {orig_size} samples passed QC."))
 
 data_final <- DGEList(counts, samples = metadata, remove.zeros = TRUE)
 data_final <- normLibSizes(data_final, method = "TMM")

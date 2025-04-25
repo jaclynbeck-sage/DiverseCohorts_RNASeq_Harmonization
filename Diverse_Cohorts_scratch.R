@@ -3,6 +3,9 @@ library(matrixStats)
 
 source("helper_functions.R")
 
+# TODO for regression, the batch names need to be changed to be unique to
+# each data generation site
+
 metadata <- download_metadata()
 
 dataGen_fill <- viridis::turbo(3, begin = 0.25, end = 0.7)

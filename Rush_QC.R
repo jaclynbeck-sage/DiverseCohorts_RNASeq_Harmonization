@@ -9,6 +9,8 @@ counts <- counts[, metadata$specimenID]
 
 stopifnot(all(duplicated(metadata$specimenID) == FALSE))
 
+orig_size <- ncol(counts)
+
 counts_log <- lognorm(counts)
 
 metadata <- validate_sex(metadata, counts_log)
@@ -31,6 +33,8 @@ print(table(metadata$tissue, metadata$valid))
 
 metadata <- subset(metadata, valid == TRUE)
 counts <- counts[, metadata$specimenID]
+
+message(str_glue("{ncol(counts)} of {orig_size} samples passed QC."))
 
 data_final <- DGEList(counts, samples = metadata, remove.zeros = TRUE)
 data_final <- normLibSizes(data_final, method = "TMM")
