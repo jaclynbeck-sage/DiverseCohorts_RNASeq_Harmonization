@@ -55,13 +55,13 @@ vg_mssm <- variable_genes(mssm_log, 5000)
 vg_mayo <- variable_genes(mayo_log, 5000)
 vg_rush <- variable_genes(rush_log, 5000)
 
-pc_col <- prcomp(columbia_log[vg_col, ], scale. = TRUE)$rotation |>
+pc_col <- prcomp(t(columbia_log[vg_col, ]), scale. = TRUE)$x |>
   merge(metadata, by.x = "row.names", by.y = "specimenID")
-pc_mssm <- prcomp(mssm_log[vg_mssm, ], scale. = TRUE)$rotation |>
+pc_mssm <- prcomp(t(mssm_log[vg_mssm, ]), scale. = TRUE)$x |>
   merge(metadata, by.x = "row.names", by.y = "specimenID")
-pc_mayo <- prcomp(mayo_log[vg_mayo, ], scale. = TRUE)$rotation |>
+pc_mayo <- prcomp(t(mayo_log[vg_mayo, ]), scale. = TRUE)$x |>
   merge(metadata, by.x = "row.names", by.y = "specimenID")
-pc_rush <- prcomp(rush_log[vg_rush, ], scale. = TRUE)$rotation |>
+pc_rush <- prcomp(t(rush_log[vg_rush, ]), scale. = TRUE)$x |>
   merge(metadata, by.x = "row.names", by.y = "specimenID")
 
 

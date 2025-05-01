@@ -1,8 +1,9 @@
 library(synapser)
 library(ggplot2)
-library(ggforce)
+#library(ggrepel)
 library(viridis)
 library(patchwork)
+library(matrixStats)
 library(dplyr)
 library(stringr)
 library(biomaRt)
@@ -36,27 +37,43 @@ download_metadata <- function() {
     subset(!(specimenID %in% c(duplicates_remove) & sequencingBatch == "B74")) |>
     # Add some extra statistics
     mutate(
-      RINbin = case_when(RIN <= 2.5 ~ "0 to 2.5",
-                         RIN > 2.5 & RIN <= 5 ~ "2.6 to 5",
-                         RIN > 5 & RIN <= 7.5 ~ "5.1 to 7.5",
-                         RIN > 7.5 ~ "7.6+"),
-      apoe4Status = case_when(grepl("4", apoeGenotype) ~ "True",
-                              apoeGenotype == "missing or unknown" ~ "missing or unknown",
-                              .default = "False"),
+      RINbin = case_when(
+        RIN <= 2.5 ~ "0 to 2.5",
+        RIN > 2.5 & RIN <= 5 ~ "2.6 to 5",
+        RIN > 5 & RIN <= 7.5 ~ "5.1 to 7.5",
+        RIN > 7.5 ~ "7.6+"
+      ),
+      apoe4Status = case_when(
+        grepl("4", apoeGenotype) ~ "True",
+        apoeGenotype == "missing or unknown" ~ "missing or unknown",
+        .default = "False"
+      ),
       ageDeathNumeric = suppressWarnings(as.numeric(ageDeath)),
       pmiNumeric = suppressWarnings(as.numeric(PMI)),
-      ageBin = case_when(ageDeathNumeric < 65 ~ "Under 65",
-                         ageDeathNumeric >= 65 & ageDeathNumeric < 70 ~ "65 to 69",
-                         ageDeathNumeric >= 70 & ageDeathNumeric < 75 ~ "70 to 74",
-                         ageDeathNumeric >= 75 & ageDeathNumeric < 80 ~ "75 to 79",
-                         ageDeathNumeric >= 80 & ageDeathNumeric < 85 ~ "80 to 74",
-                         ageDeathNumeric >= 85 & ageDeathNumeric < 90 ~ "85 to 90",
-                         .default = ageDeath),
-      pmiBin = case_when(pmiNumeric < 10 ~ "Under 10",
-                         pmiNumeric >= 10 & pmiNumeric < 20 ~ "10 to 19",
-                         pmiNumeric >= 20 & pmiNumeric < 30 ~ "20 to 29",
-                         pmiNumeric >= 30 ~ "30+",
-                         .default = PMI)
+      ageBin = case_when(
+        ageDeathNumeric < 65 ~ "Under 65",
+        ageDeathNumeric >= 65 & ageDeathNumeric < 70 ~ "65 to 69",
+        ageDeathNumeric >= 70 & ageDeathNumeric < 75 ~ "70 to 74",
+        ageDeathNumeric >= 75 & ageDeathNumeric < 80 ~ "75 to 79",
+        ageDeathNumeric >= 80 & ageDeathNumeric < 85 ~ "80 to 74",
+        ageDeathNumeric >= 85 & ageDeathNumeric < 90 ~ "85 to 90",
+        .default = ageDeath
+      ),
+      pmiBin = case_when(
+        pmiNumeric < 10 ~ "Under 10",
+        pmiNumeric >= 10 & pmiNumeric < 20 ~ "10 to 19",
+        pmiNumeric >= 20 & pmiNumeric < 30 ~ "20 to 29",
+        pmiNumeric >= 30 ~ "30+",
+        .default = PMI
+      ),
+      # Sequencing batches need to be re-named to be unique to each data set --
+      # Mayo sequenced "Mayo", "Emory", and sample swaps in the same batches
+      # Rush did the same with "Rush" and sample swaps
+      # NYGC sequenced "Columbia" separately from "MSSM" -- TODO sample swaps?
+      sequencingBatch = case_match(dataGenerationSite,
+        c("Mayo", "Rush") ~ paste(dataGenerationSite, sequencingBatch, sep = "_"),
+        "NYGC" ~ paste(dataGenerationSite, dataContributionGroup, sequencingBatch, sep = "_")
+      )
     )
 }
 
@@ -79,17 +96,29 @@ lognorm <- function(data) {
 }
 
 
-validate_sex <- function(metadata, data) {
-  sex_genes <- c(XIST = "ENSG00000229807", UTY = "ENSG00000183878")
+validate_sex <- function(metadata, data, sex_thresh = 2.0) {
+  # source: https://www.ncbi.nlm.nih.gov/pubmed/23829492
+  y_genes <- c(RPS4Y1 = "ENSG00000129824",
+               EIF1AY = "ENSG00000198692",
+               DDX3Y = "ENSG00000067048",
+               KDM5D = "ENSG00000012817")
+  sex_genes <- c(XIST = "ENSG00000229807", y_genes)
 
-  sex_check <- metadata |>
-    dplyr::select(specimenID, sex) |>
+  sex_check <- metadata %>%
+    dplyr::select(specimenID, sex) %>%
     merge(
       t(data[sex_genes, ]),
-      by.x = "specimenID", by.y = "row.names",
-      sort = FALSE
-    ) |>
-    dplyr::rename(XIST = ENSG00000229807, UTY = ENSG00000183878)
+      by.x = "specimenID", by.y = "row.names"
+    ) %>%
+    dplyr::rename(XIST = ENSG00000229807) %>%
+    mutate(
+      mean_Y = rowMeans(dplyr::select(., all_of(y_genes))),
+      est_sex = case_when(mean_Y > sex_thresh ~ "male",
+                          .default = "female"),
+      sex_valid = sex == est_sex
+    ) %>%
+    # Put FALSE last so they are plotted on top of other dots
+    arrange(desc(sex_valid))
 
   plt1 <- ggplot(sex_check, aes(x = sex, y = XIST, fill = sex)) +
     geom_boxplot(width = 0.25, outliers = FALSE) +
@@ -97,71 +126,145 @@ validate_sex <- function(metadata, data) {
     theme_bw() +
     theme(legend.position = "bottom")
 
-  plt2 <- ggplot(sex_check, aes(x = sex, y = UTY, fill = sex)) +
+  plt2 <- ggplot(sex_check, aes(x = sex, y = mean_Y, fill = sex)) +
     geom_boxplot(width = 0.25, outliers = FALSE) +
     geom_jitter(size = 0.5) +
     theme_bw() +
     theme(legend.position = "bottom")
 
-  plt3 <- ggplot(sex_check, aes(x = XIST, y = UTY, color = sex)) +
+  plt3 <- ggplot(sex_check, aes(x = XIST, y = mean_Y, color = sex)) +
     geom_point(size = 0.5) +
-    geom_hline(yintercept = log2(1.5)) + # 1 CPM
     theme_bw() +
     theme(legend.position = "bottom")
 
-  print(plt1 + plt2 + plt3)
+  plt4 <- ggplot(sex_check, aes(x = XIST, y = mean_Y, color = sex_valid)) +
+    geom_point(size = ifelse(sex_check$sex_valid, 0.5, 1)) +
+    theme_bw() +
+    theme(legend.position = "bottom") +
+    scale_color_manual(values = c("TRUE" = "black", "FALSE" = "red")) +
+    geom_hline(yintercept = sex_thresh, linetype = "dotdash", color = "blue")
+    #geom_label_repel(aes(label = ifelse(!sex_valid, specimenID, NA)),
+    #                 segment.color = "darkgray",
+    #                 na.rm = TRUE)
 
-  # TODO look at how sageseqr used PCA to do this
+  print(plt1 + plt2 + plt3 + plt4)
 
-  # All males are > 2.5 log2-CPM, but any female samples > the threshold below
-  # should be suspect.
-  sex_check$est_sex <- case_when(
-    sex_check$UTY > log2(1.5) ~ "male",
-    .default = "female"
-  )
+  rownames(sex_check) <- sex_check$specimenID
+  sex_check <- sex_check[metadata$specimenID, ]
 
-  metadata$sex_valid <- sex_check$sex == sex_check$est_sex
+  metadata$sex_valid <- sex_check$sex_valid
 
   metadata
 }
 
 
-outlier_pca <- function(metadata, data, n_mads = 5) {
+outlier_pca <- function(metadata, data, gene_info, n_sds = 4) {
   metadata$pca_valid <- FALSE
 
-  for (tiss in unique(metadata$tissue)) {
-    meta_tissue <- subset(metadata, tissue == tiss)
-    data_tissue <- data[, meta_tissue$specimenID]
+  # Use protein-coding autosomal genes, per Mayo's processing pipeline
+  protein_coding <- subset(gene_info, gene_biotype == "protein_coding" &
+                             grepl("chr[1-9]+", chromosome_name)) |>
+    pull(ensembl_gene_id)
 
-    pc_tissue <- prcomp(data_tissue, scale. = TRUE)
-    pc_df <- cbind(pc_tissue$rotation[, c("PC1", "PC2")], meta_tissue)
+  pca_dfs <- list()
+  ellipse_dfs <- list()
 
-    med_pc1 <- median(pc_df$PC1)
-    mad_pc1 <- mad(pc_df$PC1) * n_mads
-    med_pc2 <- median(pc_df$PC2)
-    mad_pc2 <- mad(pc_df$PC2) * n_mads
+  # Formula for an ellipse is (x^2 / a^2) + (y^2 / b^2) = 1, so
+  # y = +/- sqrt((1 - x^2 / a^2) * b^2)
+  ellipse_points <- function(axis_A, axis_B) {
+    x <- seq(from = -axis_A, to = axis_A, length.out = 1000)
+    y <- sqrt((1 - x^2 / axis_A^2) * axis_B^2)
 
-    # Formula for an ellipse centered at (0,0) is: (x^2 / a^2) + (y^2 / b^2) = 1
-    in_ellipse <- (pc_df$PC1 - med_pc1)^2 / mad_pc1^2 +
-      (pc_df$PC2 - med_pc2)^2 / mad_pc2^2
-
-    meta_tissue$pca_valid <- in_ellipse <= 1
-
-    plt <- ggplot(pc_df, aes(x = PC1, y = PC2)) +
-      geom_point(aes(color = sequencingBatch)) + #color = ifelse(meta_tissue$pca_valid, "black", "red")) +
-      geom_ellipse(aes(x0 = med_pc1, y0 = med_pc2,
-                       a = mad_pc1, b = mad_pc2, angle = 0)) +
-      theme_bw() +
-      theme(legend.position = "bottom") +
-      ggtitle(tiss)
-
-    # Something about geom_ellipse doesn't work right with patchwork, so we
-    # print each plot separately instead of all in a row
-    print(plt)
-
-    meta_tissue <- subset(meta_tissue, pca_valid)
-    metadata$pca_valid[metadata$specimenID %in% meta_tissue$specimenID] <- TRUE
+    data.frame(x = c(x, rev(x)), y = c(y, rev(-y)))
   }
+
+  # Do PCA outlier detection on a per-tissue or per-group basis.
+  # Note: When doing a PCA of Rush data, the points clearly separate by batch.
+  # This is most evident in the DLPFC but is also mildly visible in the other
+  # tissues. Combining all batches causes batch-specific outliers to be missed,
+  # so instead Rush outliers are detected on a tissue + batch basis.
+
+  if (unique(metadata$dataGenerationSite) == "Rush") {
+    metadata$pca_group <- paste(metadata$tissue, metadata$sequencingBatch, sep = " / ")
+  } else {
+    metadata$pca_group <- metadata$tissue
+  }
+
+  for (grp in unique(metadata$pca_group)) {
+    meta_group <- subset(metadata, pca_group == grp)
+    data_group <- data[protein_coding, meta_group$specimenID]
+
+    # Remove genes that are mostly 0's, which are -1 in log2-scale. For PCA,
+    # restrict to genes expressed in >= 80% of samples
+    genes_keep <- rowSums(data_group > -1) >= 0.8 * ncol(data_group)
+    data_group <- data_group[genes_keep, ]
+
+    # Remove genes with very low variance in this group, per Mayo's processing pipeline
+    variance <- rowVars(data_group)
+    genes_keep <- names(variance)[variance > 0.001]
+    data_group <- data_group[genes_keep, ]
+
+    pc_group <- prcomp(t(data_group), center = TRUE, scale. = TRUE)
+    pc_df <- merge(pc_group$x, meta_group,
+                   by.x = "row.names", by.y = "specimenID") |>
+      dplyr::rename(specimenID = Row.names)
+
+    pc1_thresh <- sd(pc_df$PC1) * n_sds
+    pc2_thresh <- sd(pc_df$PC2) * n_sds
+
+    in_ellipse <- (pc_df$PC1^2 / pc1_thresh^2) + (pc_df$PC2^2 / pc2_thresh^2)
+
+    pc_df$pca_valid <- in_ellipse < 1
+
+    pca_dfs[[grp]] <- pc_df |>
+      dplyr::select(specimenID, PC1, PC2, tissue, sequencingBatch, pca_group, pca_valid)
+
+    ellipse_dfs[[grp]] <- ellipse_points(pc1_thresh, pc2_thresh) |>
+      mutate(
+        tissue = unique(meta_group$tissue),
+        pca_group = unique(meta_group$pca_group),
+        # This variable is only needed for Rush
+        sequencingBatch = ifelse(
+          unique(meta_group$dataGenerationSite == "Rush"),
+          unique(meta_group$sequencingBatch),
+          1
+        )
+      )
+  }
+
+  pca_dfs <- do.call(rbind, pca_dfs)
+  ellipse_dfs <- do.call(rbind, ellipse_dfs)
+
+  plt1 <- ggplot(pca_dfs, aes(x = PC1, y = PC2, color = sequencingBatch)) +
+    geom_point(size = 0.8) +
+    geom_path(data = ellipse_dfs,
+              aes(x = x, y = y),
+              linetype = "dotdash",
+              color = "blue") +
+    theme_bw() +
+    theme(legend.position = "bottom")
+
+  plt2 <- ggplot(pca_dfs, aes(x = PC1, y = PC2, color = pca_valid)) +
+    geom_point(size = ifelse(pca_dfs$pca_valid, 0.5, 1)) +
+    geom_path(data = ellipse_dfs,
+              aes(x = x, y = y),
+              linetype = "dotdash",
+              color = "blue") +
+    theme_bw() +
+    theme(legend.position = "bottom") +
+    scale_color_manual(values = c("TRUE" = "black", "FALSE" = "red"))
+
+  if (unique(metadata$dataGenerationSite == "Rush")) {
+    n_columns <- length(unique(ellipse_dfs$pca_group))
+    plt_final <- (plt1 + facet_wrap(~tissue + sequencingBatch, ncol = n_columns)) /
+      (plt2 + facet_wrap(~tissue + sequencingBatch, ncol = n_columns))
+    print(plt_final)
+  } else {
+    print((plt1 + facet_wrap(~tissue)) / (plt2 + facet_wrap(~tissue)))
+  }
+
+  pca_dfs <- subset(pca_dfs, pca_valid)
+  metadata$pca_valid[metadata$specimenID %in% pca_dfs$specimenID] <- TRUE
 
   metadata
 }
@@ -416,4 +519,49 @@ get_gc_content_gtf <- function(gtf_file, fasta_file) {
   write.csv(gene_final, out_file, row.names = FALSE, quote = FALSE)
 
   return(gene_final)
+}
+
+
+qc_json_test <- function() {
+  js_txt <- readr::read_file("downloads/multiqc_data.json") # Mayo
+  js_txt <- str_replace_all(js_txt, "NaN", str_escape('"NaN"'))
+  js <- jsonlite::fromJSON(js_txt, simplifyVector = FALSE)
+
+  data <- lapply(js$report_saved_raw_data, function(item) {
+    do.call(rbind, item)
+  })
+
+  # multiqc_picard_dups: PERCENT_DUPLICATION
+  # multiqc_rsem: Unalignable, Alignable, Filtered, Total, alignable_percent, Unique, Multi, Uncertain
+  # multiqc_samtools_stats: reads_mapped, reads_mapped_and_paired, reads_unmapped, reads_duplicated, reads_QC_failed, bases_duplicated, mismatches, error_rate
+  # multiqc_samtools_flagstat: ??
+  # multiqc_samtools_idxstats: 1st number of chrX and chrY
+  # multiqc_fastqc: %GC, total_deduplicated_percentage
+  # multiqc_cutadapt: ??
+
+  # Each item in idxstats is a list with 2 numbers. The first number is the
+  # number of reads mapped to the chromosome, the second number is the length
+  # of the chromosome. We want the first number for X and Y
+  xy_stats <- apply(data$multiqc_samtools_idxstats, 1, function(row) {
+    c(chrX = row[["chrX"]][[1]], chrY = row[["chrY"]][[1]])
+  }) |>
+    t() |>
+    as.data.frame() |>
+    mutate(total_reads = chrX + chrY,
+           pct_X = chrX / total_reads,
+           pct_Y = chrY / total_reads)
+
+  # Possible QC metrics:
+  # FastQC -
+  #   median PHRED
+  #   base content at each position
+  # RSeqC -
+  #   reads explained by first strand
+  #   percent mapped reads
+  #   number of reads mapped to genes
+  #   percent reads mapped to junctions
+  #   percent reads mapped to genes
+  #   insert size inner distance
+  #   percent known junctions
+  #   80/20 ratio of gene body coverage
 }

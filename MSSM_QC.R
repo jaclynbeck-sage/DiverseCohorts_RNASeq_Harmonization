@@ -4,6 +4,9 @@ source("helper_functions.R")
 metadata <- download_metadata()
 counts <- download_rsem("syn64176431")
 
+gene_info <- read.csv(file.path("data", "gene_lengths_gc.csv")) |>
+  mutate(ensembl_gene_id = str_replace(ensembl_gene_id, "\\.[0-9]+", ""))
+
 metadata <- subset(metadata, specimenID %in% colnames(counts))
 counts <- counts[, metadata$specimenID]
 
@@ -11,14 +14,10 @@ stopifnot(all(duplicated(metadata$specimenID) == FALSE))
 
 orig_size <- ncol(counts)
 
-# Normalize data for PCA
-data_orig <- DGEList(counts, samples = metadata, remove.zeros = TRUE)
-data_orig <- normLibSizes(data_orig, method = "TMM")
-
-counts_log <- log2(cpm(data_orig) + 0.5)
+counts_log <- lognorm(counts)
 
 metadata <- validate_sex(metadata, counts_log)
-metadata <- outlier_pca(metadata, counts_log)
+metadata <- outlier_pca(metadata, counts_log, gene_info)
 
 metadata$lib_size <- colSums(counts)
 
