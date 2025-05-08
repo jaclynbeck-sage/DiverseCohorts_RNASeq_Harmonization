@@ -3,18 +3,33 @@ source("helper_functions.R")
 
 metadata <- download_metadata()
 counts <- download_rsem("syn64176441")
+fastq_stats <- download_fastq("syn66358698", load_saved_stats = TRUE)
+fastq_summary <- fastq_stats$fastq_summary
+gc_distribution <- fastq_stats$gc_distribution
 
-gene_info <- read.csv(file.path("data", "gene_lengths_gc.csv")) |>
-  mutate(ensembl_gene_id = str_replace(ensembl_gene_id, "\\.[0-9]+", ""))
+gene_info <- read.csv(file.path("data", "gene_lengths_gc.csv"))
 
 metadata <- subset(metadata, specimenID %in% colnames(counts))
 counts <- counts[, metadata$specimenID]
+
+# Remove the duplicate samples from Rush -- there will be 4 files instead of 2
+# for these specimen IDs. The files to remove are all labeled as "<id>_S3xx"
+dupes <- which(table(fastq_summary$specimenID) == 4)
+to_remove <- lapply(names(dupes), function(id) {
+  grep(paste0(id, "_S3[0-9]+"), fastq_summary$sample, value = TRUE)
+})
+
+fastq_summary <- subset(fastq_summary,
+                        specimenID %in% metadata$specimenID &
+                          !(sample %in% unlist(to_remove)))
+gc_distribution <- subset(gc_distribution,
+                          sample %in% fastq_summary$sample)
 
 stopifnot(all(duplicated(metadata$specimenID) == FALSE))
 
 orig_size <- ncol(counts)
 
-counts_log <- lognorm(counts)
+counts_log <- simple_lognorm(counts)
 
 metadata <- validate_sex(metadata, counts_log)
 metadata <- outlier_pca(metadata, counts_log, gene_info)

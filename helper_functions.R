@@ -9,6 +9,7 @@ library(stringr)
 library(biomaRt)
 library(GenomicRanges)
 library(BSgenome)
+library(sageRNAUtils)
 
 download_metadata <- function() {
   synLogin()
@@ -83,16 +84,101 @@ download_rsem <- function(syn_id) {
   synGet(syn_id, downloadLocation = "downloads")$path |>
     read.table(header = TRUE) |>
     dplyr::select(-transcript_id.s.) |>
-    # Remove Ensembl version from Ensembl IDs
-    mutate(gene_id = str_replace(gene_id, "\\.[0-9]+", "")) |>
-    tibble::column_to_rownames("gene_id")
+    # Genes that end with version number followed by _PAR_Y should be removed,
+    # as the counts are identical to their non-PAR_Y counterparts
+    dplyr::filter(!grepl("\\.[0-9]+_PAR_Y", gene_id)) |>
+    tibble::column_to_rownames("gene_id") |>
+    as.matrix()
 }
 
 
-lognorm <- function(data) {
-  data <- sweep(data, 2, colSums(data), "/") * 1e6
-  log2(data + 0.5) |>
-    as.matrix()
+download_fastq <- function(syn_folder_id, load_saved_stats = FALSE) {
+  fastq_dir <- file.path("downloads", syn_folder_id)
+  fq_stats_file <- file.path(fastq_dir, "fq_stats.rds")
+
+  # Avoid repeating the very long process of downloading and reading in the
+  # fastqc files
+  if (load_saved_stats & file.exists(fq_stats_file)) {
+    fq_stats <- readRDS(fq_stats_file)
+  } else {
+    synLogin()
+
+    # Get a list of all fastq.zip files in the folder on Synapse and download them
+    children <- synGetChildren(syn_folder_id)
+
+    message("Downloading FastQC data from Synapse...")
+
+    files <- sapply(children$asList(), function(child) {
+      suppressMessages(synGet(child$id, downloadLocation = fastq_dir)$path)
+    })
+
+    message("Reading fastqc.zip files...")
+
+    # Read in all of the statistics from the zip file for every sample
+    fq_stats <- suppressMessages(
+      fastqcr::qc_read_collection(files, sample_names = basename(files))
+    )
+
+    # Save in case we need to re-run some of this processing
+    saveRDS(fq_stats, file = fq_stats_file)
+  }
+
+  # Summary and modifications to the statistics
+  basic_stats <- fq_stats$basic_statistics |>
+    tidyr::pivot_wider(names_from = "Measure", values_from = "Value") |>
+    dplyr::mutate(
+      specimenID = str_replace(sample, "_S[0-9]+_(1|2)_val_.*", ""),
+      read = ifelse(grepl("val_1", Filename), "R1", "R2"),
+      # These values are strings originally
+      total_sequences = as.numeric(`Total Sequences`),
+      num_poor_quality_sequences = as.numeric(`Sequences flagged as poor quality`),
+      percent_gc_content = as.numeric(`%GC`)
+    ) |>
+    dplyr::select(sample, specimenID, read, total_sequences,
+                  num_poor_quality_sequences, percent_gc_content)
+
+  phred_per_base <- fq_stats$per_base_sequence_quality |>
+    group_by(sample) |>
+    summarize(phred_mean_per_base = mean(Mean, na.rm = TRUE))
+
+  phred_per_seq <- fq_stats$per_sequence_quality_scores |>
+    group_by(sample) |>
+    summarize(phred_mean_per_sequence = sum(Quality * Count, na.rm = TRUE) /
+                sum(Count, na.rm = TRUE))
+
+  overrep <- fq_stats$overrepresented_sequences |>
+    group_by(sample) |>
+    summarize(percent_overrepresented_sequences = sum(Percentage))
+
+  base_content <- fq_stats$per_base_sequence_content |>
+    dplyr::rename(position = Base) |>
+    tidyr::pivot_longer(cols = c("G", "A", "T", "C"),
+                        names_to = "base",
+                        values_to = "percent") |>
+    mutate(difference = abs(percent - 25)) |>
+    group_by(sample) |>
+    summarize(base_content_deviation_sum = sum(difference))
+
+  colnames(fq_stats$total_deduplicated_percentage)[2] <- "total_deduplicated_percentage"
+
+  # Merge all statistics into a single data frame by sample
+  fq_data <- purrr::reduce(
+    list(basic_stats, phred_per_base, phred_per_seq, overrep, base_content,
+         fq_stats$total_deduplicated_percentage),
+    dplyr::full_join
+  ) |>
+    mutate(
+      # Some samples won't have any flagged overrepresented sequences so their
+      # values will be NA originally. We set those to 0.
+      percent_overrepresented_sequences = ifelse(
+        is.na(percent_overrepresented_sequences), 0, percent_overrepresented_sequences
+      )
+    ) |>
+    as.data.frame()
+
+  return(list(fastq_summary = fq_data,
+              # For plotting
+              gc_distribution = fq_stats$per_sequence_gc_content))
 }
 
 
@@ -103,6 +189,9 @@ validate_sex <- function(metadata, data, sex_thresh = 2.0) {
                DDX3Y = "ENSG00000067048",
                KDM5D = "ENSG00000012817")
   sex_genes <- c(XIST = "ENSG00000229807", y_genes)
+
+  # Strip any version numbers off of the gene names
+  rownames(data) <- str_replace(rownames(data), "\\.[0-9]+", "")
 
   sex_check <- metadata %>%
     dplyr::select(specimenID, sex) %>%
