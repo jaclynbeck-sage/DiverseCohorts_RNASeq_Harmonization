@@ -4,11 +4,18 @@ source("helper_functions.R")
 metadata <- download_metadata()
 counts <- download_rsem("syn64176419")
 
-gene_info <- read.csv(file.path("data", "gene_lengths_gc.csv")) |>
-  mutate(ensembl_gene_id = str_replace(ensembl_gene_id, "\\.[0-9]+", ""))
+fastqc_data <- readRDS(file.path("data", "QC", "Mayo_Emory_fastqc_stats.rds"))
+fastqc_stats <- fastqc_data$fastq_summary
+gc_distribution <- fastqc_data$gc_distribution
+
+multiqc_stats <- readRDS(file.path("data", "QC", "Mayo_Emory_multiqc_stats.rds"))
+
+gene_info <- read.csv(file.path("data", "gene_lengths_gc.csv"))
 
 metadata <- subset(metadata, specimenID %in% colnames(counts))
 counts <- counts[, metadata$specimenID]
+fastqc_stats <- subset(fastqc_stats, specimenID %in% metadata$specimenID)
+multiqc_stats <- subset(multiqc_stats, specimenID %in% metadata$specimenID)
 
 stopifnot(all(duplicated(metadata$specimenID) == FALSE))
 

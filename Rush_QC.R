@@ -3,9 +3,12 @@ source("helper_functions.R")
 
 metadata <- download_metadata()
 counts <- download_rsem("syn64176441")
-fastq_stats <- download_fastq("syn66358698", load_saved_stats = TRUE)
-fastq_summary <- fastq_stats$fastq_summary
-gc_distribution <- fastq_stats$gc_distribution
+
+fastqc_data <- readRDS(file.path("data", "QC", "Rush_fastqc_stats.rds"))
+fastqc_stats <- fastqc_data$fastq_summary
+gc_distribution <- fastqc_data$gc_distribution
+
+multiqc_stats <- readRDS(file.path("data", "QC", "Rush_multiqc_stats.rds"))
 
 gene_info <- read.csv(file.path("data", "gene_lengths_gc.csv"))
 
@@ -21,9 +24,14 @@ to_remove <- lapply(names(dupes), function(id) {
 
 fastq_summary <- subset(fastq_summary,
                         specimenID %in% metadata$specimenID &
-                          !(sample %in% unlist(to_remove)))
+                          !(sample %in% unlist(to_remove))) |>
+  mutate(specimenID = str_replace(specimenID, "_S[0-9]+.*", ""))
 gc_distribution <- subset(gc_distribution,
                           sample %in% fastq_summary$sample)
+
+multiqc_stats <- subset(multiqc_stats, specimenID %in% metadata$specimenID &
+                          !(sample %in% unlist(to_remove))) |>
+  mutate(specimenID = str_replace(specimenID, "_S[0-9]+.*", ""))
 
 stopifnot(all(duplicated(metadata$specimenID) == FALSE))
 

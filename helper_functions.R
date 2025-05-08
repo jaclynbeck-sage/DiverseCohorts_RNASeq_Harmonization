@@ -92,12 +92,13 @@ download_rsem <- function(syn_id) {
 }
 
 
-download_fastq <- function(syn_folder_id, load_saved_stats = FALSE) {
-  fastq_dir <- file.path("downloads", syn_folder_id)
-  fq_stats_file <- file.path(fastq_dir, "fq_stats.rds")
+download_fastq <- function(dataset_name, syn_folder_id, load_saved_stats = FALSE) {
+  fastq_dir <- file.path("downloads", paste0(dataset_name, "_fastqc"))
+  fq_stats_file <- file.path("data", "QC",
+                             paste0(dataset_name, "_fq_stats_raw.rds"))
 
   # Avoid repeating the very long process of downloading and reading in the
-  # fastqc files
+  # fastqc files if possible
   if (load_saved_stats & file.exists(fq_stats_file)) {
     fq_stats <- readRDS(fq_stats_file)
   } else {
@@ -112,11 +113,19 @@ download_fastq <- function(syn_folder_id, load_saved_stats = FALSE) {
       suppressMessages(synGet(child$id, downloadLocation = fastq_dir)$path)
     })
 
+    # Save the names of the original files so that if this is Columbia data,
+    # renaming the files doesn't lose the sample names we need
+    sample_names <- basename(files)
+
+    if (all(grepl("NYBB_", files))) {
+      files <- remap_columbia_fastqc(files)
+    }
+
     message("Reading fastqc.zip files...")
 
     # Read in all of the statistics from the zip file for every sample
     fq_stats <- suppressMessages(
-      fastqcr::qc_read_collection(files, sample_names = basename(files))
+      fastqcr::qc_read_collection(files, sample_names = sample_names)
     )
 
     # Save in case we need to re-run some of this processing
@@ -127,7 +136,11 @@ download_fastq <- function(syn_folder_id, load_saved_stats = FALSE) {
   basic_stats <- fq_stats$basic_statistics |>
     tidyr::pivot_wider(names_from = "Measure", values_from = "Value") |>
     dplyr::mutate(
-      specimenID = str_replace(sample, "_S[0-9]+_(1|2)_val_.*", ""),
+      # This pattern matches strings with like "_1_val_<anything>" or
+      # "_S21_1_val_<anything>". Anything before these patterns should be the
+      # specimen ID for every study's files
+      specimenID = str_replace(sample, "(_S[0-9]+)?_(1|2)_val_.*", ""),
+      specimenID = make.names(specimenID),
       read = ifelse(grepl("val_1", Filename), "R1", "R2"),
       # These values are strings originally
       total_sequences = as.numeric(`Total Sequences`),
@@ -138,26 +151,26 @@ download_fastq <- function(syn_folder_id, load_saved_stats = FALSE) {
                   num_poor_quality_sequences, percent_gc_content)
 
   phred_per_base <- fq_stats$per_base_sequence_quality |>
-    group_by(sample) |>
-    summarize(phred_mean_per_base = mean(Mean, na.rm = TRUE))
+    dplyr::group_by(sample) |>
+    dplyr::summarize(phred_mean_per_base = mean(Mean, na.rm = TRUE))
 
   phred_per_seq <- fq_stats$per_sequence_quality_scores |>
-    group_by(sample) |>
-    summarize(phred_mean_per_sequence = sum(Quality * Count, na.rm = TRUE) /
-                sum(Count, na.rm = TRUE))
+    dplyr::group_by(sample) |>
+    dplyr::summarize(phred_mean_per_sequence = sum(Quality * Count, na.rm = TRUE) /
+                       sum(Count, na.rm = TRUE))
 
   overrep <- fq_stats$overrepresented_sequences |>
-    group_by(sample) |>
-    summarize(percent_overrepresented_sequences = sum(Percentage))
+    dplyr::group_by(sample) |>
+    dplyr::summarize(percent_overrepresented_sequences = sum(Percentage))
 
   base_content <- fq_stats$per_base_sequence_content |>
     dplyr::rename(position = Base) |>
     tidyr::pivot_longer(cols = c("G", "A", "T", "C"),
                         names_to = "base",
                         values_to = "percent") |>
-    mutate(difference = abs(percent - 25)) |>
-    group_by(sample) |>
-    summarize(base_content_deviation_sum = sum(difference))
+    dplyr::mutate(difference = abs(percent - 25)) |>
+    dplyr::group_by(sample) |>
+    dplyr::summarize(base_content_deviation_sum = sum(difference))
 
   colnames(fq_stats$total_deduplicated_percentage)[2] <- "total_deduplicated_percentage"
 
@@ -167,7 +180,7 @@ download_fastq <- function(syn_folder_id, load_saved_stats = FALSE) {
          fq_stats$total_deduplicated_percentage),
     dplyr::full_join
   ) |>
-    mutate(
+    dplyr::mutate(
       # Some samples won't have any flagged overrepresented sequences so their
       # values will be NA originally. We set those to 0.
       percent_overrepresented_sequences = ifelse(
@@ -179,6 +192,28 @@ download_fastq <- function(syn_folder_id, load_saved_stats = FALSE) {
   return(list(fastq_summary = fq_data,
               # For plotting
               gc_distribution = fq_stats$per_sequence_gc_content))
+}
+
+
+# Columbia samples inside the fastqc files have a different sample name than the
+# file name, which breaks fastqcr::read. Here we rename all the zip files to
+# match the sample name inside. The original names are retained prior to calling
+# this function so we can map new names onto old ones.
+remap_columbia_fastqc <- function(fastqc_files) {
+  new_files <- sapply(fastqc_files, function(zip_file) {
+    # Lists what's in the zip file without extracting it
+    contents <- unzip(zip_file, list = TRUE)
+    old_name <- paste0(str_replace(contents$Name[1], "/", ""),
+                       ".zip")
+    old_name <- file.path(dirname(zip_file), old_name)
+
+    # If we've done this before and there are already renamed files in the
+    # directory, they will be overwritten by this command
+    file.rename(zip_file, old_name)
+    return(old_name)
+  })
+
+  return(new_files)
 }
 
 
@@ -611,8 +646,11 @@ get_gc_content_gtf <- function(gtf_file, fasta_file) {
 }
 
 
-qc_json_test <- function() {
-  js_txt <- readr::read_file("downloads/multiqc_data.json") # Mayo
+download_multiqc_json <- function(syn_id) {
+  synLogin()
+  js_file <- synGet(syn_id, downloadLocation = "downloads")
+
+  js_txt <- readr::read_file(js_file$path)
   js_txt <- str_replace_all(js_txt, "NaN", str_escape('"NaN"'))
   js <- jsonlite::fromJSON(js_txt, simplifyVector = FALSE)
 
@@ -620,13 +658,47 @@ qc_json_test <- function() {
     do.call(rbind, item)
   })
 
-  # multiqc_picard_dups: PERCENT_DUPLICATION
-  # multiqc_rsem: Unalignable, Alignable, Filtered, Total, alignable_percent, Unique, Multi, Uncertain
-  # multiqc_samtools_stats: reads_mapped, reads_mapped_and_paired, reads_unmapped, reads_duplicated, reads_QC_failed, bases_duplicated, mismatches, error_rate
+  # Helper function to convert items from "data", which are matrices, to
+  # data frames with only the specified columns. Rownames are moved to a new
+  # "specimenID" column and the specified prefix is added to the other column
+  # names
+  reformat_stats <- function(df, prefix, cols_keep) {
+    df |>
+      as.data.frame() |>
+      dplyr::select({{cols_keep}}) |>
+      # Add prefix to column names
+      dplyr::rename_with(~ paste0(prefix, "_", .x), everything()) |>
+      # All columns are actually named lists, unlist them
+      dplyr::mutate(across(everything(), ~unlist(.x))) |>
+      # Make specimenID column
+      tibble::rownames_to_column("specimenID") |>
+      dplyr::mutate(specimenID = make.names(specimenID))
+  }
+
+  # TODO decide on:
+  # multiqc_samtools_stats: average_quality?, insert_size_average?
   # multiqc_samtools_flagstat: ??
-  # multiqc_samtools_idxstats: 1st number of chrX and chrY
-  # multiqc_fastqc: %GC, total_deduplicated_percentage
-  # multiqc_cutadapt: ??
+  # multiqc_fastqc: %GC, total_deduplicated_percentage <-- compare to fastqc data
+
+  picard_stats <- data$multiqc_picard_dups |>
+    reformat_stats(prefix = "picard", cols_keep = PERCENT_DUPLICATION) |>
+    dplyr::mutate(picard_PERCENT_DUPLICATION = picard_PERCENT_DUPLICATION * 100)
+
+  rsem_stats <- data$multiqc_rsem |>
+    reformat_stats(prefix = "rsem",
+                   cols_keep = c(alignable_percent, Unique, Total)) |>
+    dplyr::mutate(
+      rsem_uniquely_aligned_percent = rsem_Unique / rsem_Total * 100
+    ) |>
+    dplyr::select(-rsem_Unique, -rsem_Total)
+
+  samtools_stats <- data$multiqc_samtools_stats |>
+    reformat_stats(
+      prefix = "samtools",
+      cols_keep = c(average_quality, insert_size_average, reads_mapped_percent,
+                    reads_duplicated_percent, reads_MQ0_percent,
+                    reads_QC_failed_percent)
+    )
 
   # Each item in idxstats is a list with 2 numbers. The first number is the
   # number of reads mapped to the chromosome, the second number is the length
@@ -635,10 +707,37 @@ qc_json_test <- function() {
     c(chrX = row[["chrX"]][[1]], chrY = row[["chrY"]][[1]])
   }) |>
     t() |>
-    as.data.frame() |>
-    mutate(total_reads = chrX + chrY,
-           pct_X = chrX / total_reads,
-           pct_Y = chrY / total_reads)
+    reformat_stats(prefix = "samtools", cols_keep = c(chrX, chrY)) |>
+    dplyr::mutate(total = samtools_chrX + samtools_chrY,
+                  samtools_percent_mapped_X = samtools_chrX / total * 100,
+                  samtools_percent_mapped_Y = samtools_chrY / total * 100) |>
+    dplyr::select(-total, -samtools_chrX, -samtools_chrY)
+
+  # This matrix has separate rows for read 1 and read 2, which need to be
+  # combined into a single row.
+  cutadapt_stats <- data$multiqc_cutadapt |>
+    reformat_stats(prefix = "cutadapt", cols_keep = percent_trimmed) |>
+    dplyr::mutate(read = ifelse(grepl("_1$", specimenID), "R1", "R2"),
+                  specimenID = str_replace(specimenID, "_(1|2)$", "")) |>
+    tidyr::pivot_wider(names_from = "read",
+                       values_from = "cutadapt_percent_trimmed") |>
+    dplyr::rename(cutadapt_percent_trimmed_R1 = R1,
+                  cutadapt_percent_trimmed_R2 = R2) |>
+    dplyr::mutate(
+      cutadapt_mean_percent_trimmed = (cutadapt_percent_trimmed_R1 +
+                                         cutadapt_percent_trimmed_R2) / 2
+    )
+
+  technical_stats <- purrr::reduce(
+    list(picard_stats, rsem_stats, samtools_stats, xy_stats, cutadapt_stats),
+    dplyr::full_join
+  )
+
+  if (any(is.na(technical_stats))) {
+    warning("NA values exist in technical stats data frame.")
+  }
+
+  return(technical_stats)
 
   # Possible QC metrics:
   # FastQC -
