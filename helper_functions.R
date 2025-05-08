@@ -150,9 +150,10 @@ download_fastq <- function(dataset_name, syn_folder_id, load_saved_stats = FALSE
     dplyr::select(sample, specimenID, read, total_sequences,
                   num_poor_quality_sequences, percent_gc_content)
 
-  phred_per_base <- fq_stats$per_base_sequence_quality |>
-    dplyr::group_by(sample) |>
-    dplyr::summarize(phred_mean_per_base = mean(Mean, na.rm = TRUE))
+  phred_per_base <- basic_stats |>
+    dplyr::select(sample, specimenID, read) |>
+    merge(fq_stats$per_base_sequence_quality) |>
+    dplyr::select(sample, specimenID, read, Base, Mean, Median)
 
   phred_per_seq <- fq_stats$per_sequence_quality_scores |>
     dplyr::group_by(sample) |>
@@ -163,20 +164,35 @@ download_fastq <- function(dataset_name, syn_folder_id, load_saved_stats = FALSE
     dplyr::group_by(sample) |>
     dplyr::summarize(percent_overrepresented_sequences = sum(Percentage))
 
-  base_content <- fq_stats$per_base_sequence_content |>
+  base_content <- basic_stats |>
+    dplyr::select(sample, specimenID, read) |>
+    merge(fq_stats$per_base_sequence_content) |>
     dplyr::rename(position = Base) |>
     tidyr::pivot_longer(cols = c("G", "A", "T", "C"),
                         names_to = "base",
                         values_to = "percent") |>
     dplyr::mutate(difference = abs(percent - 25)) |>
-    dplyr::group_by(sample) |>
-    dplyr::summarize(base_content_deviation_sum = sum(difference))
+    dplyr::group_by(sample, specimenID, read, base) |>
+    dplyr::summarize(base_content_deviation_sum = sum(difference),
+                     .groups = "drop")
 
   colnames(fq_stats$total_deduplicated_percentage)[2] <- "total_deduplicated_percentage"
 
-  # Merge all statistics into a single data frame by sample
+  pass_fail <- fq_stats$summary |>
+    tidyr::pivot_wider(names_from = "module", values_from = "status")
+
+  gc_distribution <- basic_stats |>
+    dplyr::select(sample, specimenID, read) |>
+    merge(fq_stats$per_sequence_gc_content) |>
+    dplyr::group_by(sample) |>
+    dplyr::mutate(percent_sequences = Count / sum(Count) * 100) |>
+    dplyr::rename(percent_gc_content = `GC Content`) |>
+    merge(dplyr::select(pass_fail, sample, `Per sequence GC content`)) |>
+    dplyr::rename(pass_fail = `Per sequence GC content`)
+
+  # Merge all non-base-related statistics into a single data frame by sample
   fq_data <- purrr::reduce(
-    list(basic_stats, phred_per_base, phred_per_seq, overrep, base_content,
+    list(basic_stats, phred_per_seq, overrep,
          fq_stats$total_deduplicated_percentage),
     dplyr::full_join
   ) |>
@@ -190,8 +206,10 @@ download_fastq <- function(dataset_name, syn_folder_id, load_saved_stats = FALSE
     as.data.frame()
 
   return(list(fastq_summary = fq_data,
-              # For plotting
-              gc_distribution = fq_stats$per_sequence_gc_content))
+              phred_per_base = phred_per_base,
+              base_content = base_content,
+              # For plotting only
+              gc_distribution = gc_distribution))
 }
 
 
@@ -214,6 +232,83 @@ remap_columbia_fastqc <- function(fastqc_files) {
   })
 
   return(new_files)
+}
+
+
+
+validate_fastqc <- function(metadata, fastqc_data, phred_threshold = 20) {
+  plot_df <- fastqc_data$fastq_summary |>
+    group_by(tissue, read) |>
+    mutate(across(where(is.numeric), ~ sort(.x)),
+           rank = 1:length(specimenID)) |>
+    ungroup()
+
+  plt1 <- ggplot(plot_df, aes(x = rank, y = percent_gc_content, color = read)) +
+    geom_line() +
+    theme_bw() +
+    facet_wrap(~tissue) +
+    ggtitle("Percent GC Content")
+
+  plt2 <- ggplot(plot_df, aes(x = rank, y = phred_mean_per_sequence, color = read)) +
+    geom_line() +
+    theme_bw() +
+    facet_wrap(~tissue) +
+    ggtitle("Mean Sequence Phred Score")
+
+  plt3 <- ggplot(plot_df, aes(x = rank, y = percent_overrepresented_sequences, color = read)) +
+    geom_line() +
+    theme_bw() +
+    facet_wrap(~tissue) +
+    ggtitle("Percent Overrepresented Sequences")
+
+  plt4 <- ggplot(plot_df, aes(x = rank, y = total_deduplicated_percentage, color = read)) +
+    geom_line() +
+    theme_bw() +
+    facet_wrap(~tissue) +
+    ggtitle("Total Deduplicated Percentage")
+
+  print((plt1 + plt2) / (plt3 + plt4))
+
+  # TODO do per base
+  plt5 <- ggplot(plot_df, aes(x = rank, y = base_content_deviation_sum, color = read)) +
+    geom_line() +
+    theme_bw() +
+    facet_wrap(~tissue) +
+    ggtitle("Total deviation from expected base proportions")
+
+  # TODO fix colors
+  plt6 <- ggplot(fastqc_data$gc_distribution,
+                 aes(x = percent_gc_content, y = percent_sequences,
+                     group = sample, color = pass_fail)) +
+    geom_line() +
+    theme_bw() +
+    #theme(legend.position = "none") +
+    scale_color_manual(values = c(FAIL = "red", WARN = "orange", PASS = "green")) +
+    facet_wrap(~tissue) +
+    ggtitle("Per-Sequence GC Content")
+
+  corr_mat <- fastqc_stats |>
+    dplyr::select(where(is.numeric), -num_poor_quality_sequences) |>
+    as.matrix() |>
+    cor()
+
+  corrplot::corrplot(corr_mat)
+
+  # percent_overrepresented_sequences, base_content_deviation_sum,
+  # total_deduplicated_percentage, and percent_gc_content are all highly
+  # correlated, so we only use one criteria instead of checking all of them.
+  # Using base_content_deviation_sum to match Mayo's pipeline.
+  base_content <- fastqc_stats |>
+    dplyr::select(tissue, read, base_content_deviation_sum) |>
+    dplyr::group_by(tissue, read) |>
+    dplyr::summarize(IQR1.5 = IQR(base_content_deviation_sum),
+                     Q3 = quantile(base_content_deviation_sum, 0.75),
+                     upper_limit = Q3 + IQR1.5,
+                     .groups = "drop") |>
+    merge(fastqc_stats) |>
+    subset(base_content_deviation_sum > upper_limit)
+
+  # Upper limit: Q3 + IQR1.5
 }
 
 

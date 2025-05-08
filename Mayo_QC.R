@@ -5,8 +5,6 @@ metadata <- download_metadata()
 counts <- download_rsem("syn64176419")
 
 fastqc_data <- readRDS(file.path("data", "QC", "Mayo_Emory_fastqc_stats.rds"))
-fastqc_stats <- fastqc_data$fastq_summary
-gc_distribution <- fastqc_data$gc_distribution
 
 multiqc_stats <- readRDS(file.path("data", "QC", "Mayo_Emory_multiqc_stats.rds"))
 
@@ -14,7 +12,11 @@ gene_info <- read.csv(file.path("data", "gene_lengths_gc.csv"))
 
 metadata <- subset(metadata, specimenID %in% colnames(counts))
 counts <- counts[, metadata$specimenID]
-fastqc_stats <- subset(fastqc_stats, specimenID %in% metadata$specimenID)
+
+fastqc_data <- lapply(fastqc_data, function(df) {
+  merge(dplyr::select(metadata, specimenID, tissue), df)
+})
+
 multiqc_stats <- subset(multiqc_stats, specimenID %in% metadata$specimenID)
 
 stopifnot(all(duplicated(metadata$specimenID) == FALSE))
@@ -23,6 +25,7 @@ orig_size <- ncol(counts)
 
 counts_log <- lognorm(counts)
 
+metadata <- validate_fastqc(metadata, fastqc_data)
 metadata <- validate_sex(metadata, counts_log)
 metadata <- outlier_pca(metadata, counts_log, gene_info)
 
