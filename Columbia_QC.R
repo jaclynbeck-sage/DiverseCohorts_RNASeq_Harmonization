@@ -1,6 +1,8 @@
 library(edgeR)
 source("helper_functions.R")
 
+# TODO counts matrix is missing 8 samples, 7 of which are from Biggs Institute
+# and 1 that is listed as a sample exchange but from Columbia
 metadata <- download_metadata()
 counts <- download_rsem("syn64289221")
 

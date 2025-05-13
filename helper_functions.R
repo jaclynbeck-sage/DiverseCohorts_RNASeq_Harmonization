@@ -1,41 +1,37 @@
 library(synapser)
 library(ggplot2)
-#library(ggrepel)
 library(viridis)
 library(patchwork)
 library(matrixStats)
 library(dplyr)
 library(stringr)
-library(biomaRt)
-library(GenomicRanges)
-library(BSgenome)
 library(sageRNAUtils)
 
-download_metadata <- function() {
+download_metadata <- function(configs) {
   synLogin()
 
-  ind <- synGet("syn51757646",
+  ind <- synGet(configs$individual_metadata_synid,
                 downloadLocation = "downloads",
                 ifcollision = "overwrite.local")$path |>
     read.csv()
-  bio <- synGet("syn51757645",
+  bio <- synGet(configs$biospecimen_metadata_synid,
                 downloadLocation = "downloads",
                 ifcollision = "overwrite.local")$path |>
     read.csv()
-  assay <- synGet("syn51757643",
+  assay <- synGet(configs$assay_metadata_synid,
                   downloadLocation = "downloads",
                   ifcollision = "overwrite.local")$path |>
     read.csv()
 
-  duplicates_remove <- c("Div_487", "Div_498", "Div_500", "Div_503", "Div_508",
-                         "Div_509", "Div_545")
+  duplicates_remove <- configs$Rush$remove_specimenIDs # 7 samples
+  duplicates_batch <- configs$Rush$remove_specimenIDs_batch # B74
 
   metadata <- assay |>
     merge(bio) |>
     merge(ind) |>
     mutate(specimenID = make.names(specimenID)) |>
     # Remove 7 duplicate Rush samples that are in batch B74
-    subset(!(specimenID %in% c(duplicates_remove) & sequencingBatch == "B74")) |>
+    subset(!(specimenID %in% duplicates_remove & sequencingBatch == duplicates_batch)) |>
     # Add some extra statistics
     mutate(
       RINbin = case_when(
@@ -92,124 +88,77 @@ download_rsem <- function(syn_id) {
 }
 
 
-download_fastq <- function(dataset_name, syn_folder_id, load_saved_stats = FALSE) {
-  fastq_dir <- file.path("downloads", paste0(dataset_name, "_fastqc"))
+download_fastqc <- function(dataset_config, load_saved_stats = FALSE) {
+  fastq_dir <- file.path("downloads", paste0(dataset_config$name, "_fastqc"))
   fq_stats_file <- file.path("data", "QC",
-                             paste0(dataset_name, "_fq_stats_raw.rds"))
+                             paste0(dataset_config$name, "_fq_stats_raw.rds"))
 
   # Avoid repeating the very long process of downloading and reading in the
   # fastqc files if possible
   if (load_saved_stats & file.exists(fq_stats_file)) {
+    message("Loading pre-existing FastQC file...")
     fq_stats <- readRDS(fq_stats_file)
   } else {
     synLogin()
 
     # Get a list of all fastq.zip files in the folder on Synapse and download them
-    children <- synGetChildren(syn_folder_id)
+    children <- synGetChildren(dataset_config$fastqc_folder_synid)
 
     message("Downloading FastQC data from Synapse...")
 
     files <- sapply(children$asList(), function(child) {
-      suppressMessages(synGet(child$id, downloadLocation = fastq_dir)$path)
+      synGet(child$id, downloadLocation = fastq_dir)$path
     })
 
     # Save the names of the original files so that if this is Columbia data,
     # renaming the files doesn't lose the sample names we need
-    sample_names <- basename(files)
+    sample_names <- str_replace(basename(files), "_fastqc.zip", "")
 
     if (all(grepl("NYBB_", files))) {
       files <- remap_columbia_fastqc(files)
     }
 
-    message("Reading fastqc.zip files...")
-
-    # Read in all of the statistics from the zip file for every sample
-    fq_stats <- suppressMessages(
-      fastqcr::qc_read_collection(files, sample_names = sample_names)
-    )
+    # Save time by not loading unneeded stats from the files
+    modules <- c("Basic Statistics", "Per base sequence quality",
+                 "Per base sequence content", "Sequence Duplication Levels")
+    fq_stats <- load_fastqc_output(files, sample_names, modules = modules)
 
     # Save in case we need to re-run some of this processing
     saveRDS(fq_stats, file = fq_stats_file)
   }
 
+  message("Summarizing statistics...")
+
   # Summary and modifications to the statistics
   basic_stats <- fq_stats$basic_statistics |>
-    tidyr::pivot_wider(names_from = "Measure", values_from = "Value") |>
     dplyr::mutate(
-      # This pattern matches strings with like "_1_val_<anything>" or
-      # "_S21_1_val_<anything>". Anything before these patterns should be the
+      # This pattern matches strings that end in "_1", "_2", or that end in a
+      # pattern like "_S21_1". Anything before these patterns should be the
       # specimen ID for every study's files
-      specimenID = str_replace(sample, "(_S[0-9]+)?_(1|2)_val_.*", ""),
+      specimenID = str_replace(sample, "(_S[0-9]+)?_(1|2)$", ""),
       specimenID = make.names(specimenID),
-      read = ifelse(grepl("val_1", Filename), "R1", "R2"),
-      # These values are strings originally
-      total_sequences = as.numeric(`Total Sequences`),
-      num_poor_quality_sequences = as.numeric(`Sequences flagged as poor quality`),
-      percent_gc_content = as.numeric(`%GC`)
     ) |>
-    dplyr::select(sample, specimenID, read, total_sequences,
-                  num_poor_quality_sequences, percent_gc_content)
+    dplyr::rename(total_sequences = `Total Sequences`,
+                  percent_gc_content = `%GC`)
 
-  phred_per_base <- basic_stats |>
-    dplyr::select(sample, specimenID, read) |>
-    merge(fq_stats$per_base_sequence_quality) |>
-    dplyr::select(sample, specimenID, read, Base, Mean, Median)
+  id_df <- dplyr::select(basic_stats, sample, specimenID, read)
 
-  phred_per_seq <- fq_stats$per_sequence_quality_scores |>
-    dplyr::group_by(sample) |>
-    dplyr::summarize(phred_mean_per_sequence = sum(Quality * Count, na.rm = TRUE) /
-                       sum(Count, na.rm = TRUE))
+  phred_per_base <- merge(id_df, fq_stats$per_base_sequence_quality) |>
+    dplyr::rename(position = Base)
 
-  overrep <- fq_stats$overrepresented_sequences |>
-    dplyr::group_by(sample) |>
-    dplyr::summarize(percent_overrepresented_sequences = sum(Percentage))
-
-  base_content <- basic_stats |>
-    dplyr::select(sample, specimenID, read) |>
-    merge(fq_stats$per_base_sequence_content) |>
+  base_content <- merge(id_df, fq_stats$per_base_sequence_content) |>
     dplyr::rename(position = Base) |>
     tidyr::pivot_longer(cols = c("G", "A", "T", "C"),
                         names_to = "base",
                         values_to = "percent") |>
     dplyr::mutate(difference = abs(percent - 25)) |>
     dplyr::group_by(sample, specimenID, read, base) |>
-    dplyr::summarize(base_content_deviation_sum = sum(difference),
+    dplyr::summarize(mean_base_deviation = sum(difference),
                      .groups = "drop")
 
-  colnames(fq_stats$total_deduplicated_percentage)[2] <- "total_deduplicated_percentage"
-
-  pass_fail <- fq_stats$summary |>
-    tidyr::pivot_wider(names_from = "module", values_from = "status")
-
-  gc_distribution <- basic_stats |>
-    dplyr::select(sample, specimenID, read) |>
-    merge(fq_stats$per_sequence_gc_content) |>
-    dplyr::group_by(sample) |>
-    dplyr::mutate(percent_sequences = Count / sum(Count) * 100) |>
-    dplyr::rename(percent_gc_content = `GC Content`) |>
-    merge(dplyr::select(pass_fail, sample, `Per sequence GC content`)) |>
-    dplyr::rename(pass_fail = `Per sequence GC content`)
-
-  # Merge all non-base-related statistics into a single data frame by sample
-  fq_data <- purrr::reduce(
-    list(basic_stats, phred_per_seq, overrep,
-         fq_stats$total_deduplicated_percentage),
-    dplyr::full_join
-  ) |>
-    dplyr::mutate(
-      # Some samples won't have any flagged overrepresented sequences so their
-      # values will be NA originally. We set those to 0.
-      percent_overrepresented_sequences = ifelse(
-        is.na(percent_overrepresented_sequences), 0, percent_overrepresented_sequences
-      )
-    ) |>
-    as.data.frame()
-
-  return(list(fastq_summary = fq_data,
+  return(list(basic_statistics = basic_stats,
               phred_per_base = phred_per_base,
-              base_content = base_content,
-              # For plotting only
-              gc_distribution = gc_distribution))
+              base_content = base_content))
 }
 
 
@@ -235,80 +184,99 @@ remap_columbia_fastqc <- function(fastqc_files) {
 }
 
 
+# tail can be "upper", "lower", or "both"
+# TODO move to library
+is_outlier_IQR <- function(data, tail = "both") {
+  iqr <- IQR(data)
+  q1 <- quantile(data, 0.25)
+  q3 <- quantile(data, 0.75)
+
+  switch(
+    tail,
+    "both" = (data < q1 - 1.5 * iqr) | (data > q3 + 1.5 * iqr),
+    "upper" = data > q3 + 1.5 * iqr,
+    "lower" = data < q1 - 1.5 * iqr
+  )
+}
+
 
 validate_fastqc <- function(metadata, fastqc_data, phred_threshold = 20) {
-  plot_df <- fastqc_data$fastq_summary |>
-    group_by(tissue, read) |>
-    mutate(across(where(is.numeric), ~ sort(.x)),
-           rank = 1:length(specimenID)) |>
-    ungroup()
-
-  plt1 <- ggplot(plot_df, aes(x = rank, y = percent_gc_content, color = read)) +
-    geom_line() +
+  # TODO jitter the outlier points
+  plt1 <- ggplot(fastqc_data$basic_statistics,
+                 aes(x = tissue, y = percent_gc_content, fill = read)) +
+    geom_boxplot(width = 0.5) +
     theme_bw() +
-    facet_wrap(~tissue) +
     ggtitle("Percent GC Content")
 
-  plt2 <- ggplot(plot_df, aes(x = rank, y = phred_mean_per_sequence, color = read)) +
-    geom_line() +
+  print(plt1)
+
+  plt2 <- ggplot(fastqc_data$base_content, aes(x = base, y = mean_base_deviation, fill = base)) +
+    geom_boxplot(width = 0.5) +
     theme_bw() +
-    facet_wrap(~tissue) +
-    ggtitle("Mean Sequence Phred Score")
+    facet_grid(rows = vars(read), cols = vars(tissue)) +
+    ggtitle("Mean deviation from expected base proportions")
 
-  plt3 <- ggplot(plot_df, aes(x = rank, y = percent_overrepresented_sequences, color = read)) +
-    geom_line() +
+  print(plt2)
+
+  # Using the mean content deviation from 25% of each base at each position.
+  # Mayo uses sum of deviation instead of mean, but they're equivalent for the
+  # purposes of outlier finding.
+  base_content_outliers <- fastqc_data$base_content |>
+    dplyr::group_by(tissue, read, base) |>
+    mutate(is_outlier = is_outlier_IQR(mean_base_deviation, tail = "upper")) |>
+    subset(is_outlier == TRUE) |>
+    pull(specimenID)
+
+  # Any base falling below the Phred threshold marks the sample as failing QC
+  phred_fail <- fastqc_data$phred_per_base |>
+    subset(Median < phred_threshold) |>
+    pull(specimenID)
+
+  phred_outliers <- fastqc_data$phred_per_base |>
+    group_by(position) |>
+    mutate(is_outlier = is_outlier_IQR(Median, tail = "lower")) |>
+    subset(is_outlier == TRUE) |>
+    pull(specimenID)
+
+  metadata$base_content_warn <- metadata$specimenID %in% base_content_outliers
+  metadata$phred_score_valid <- !(metadata$specimenID %in% phred_fail)
+  metadata$phred_score_warn <- metadata$specimenID %in% phred_outliers
+
+  return(metadata)
+}
+
+
+# In the absence of RSeQC data, we only check percentage of reads mapped for
+# now. Could consider duplicated reads, rsem uniquely aligned, and cutadapt
+# trimming, all of which have clear outliers.
+validate_multiqc <- function(metadata, multiqc_stats, reads_mapped_thresh = 70) {
+  plt1 <- ggplot(multiqc_stats,
+                 aes(x = tissue, y = samtools_reads_mapped_percent, fill = tissue)) +
+    geom_boxplot() +
     theme_bw() +
-    facet_wrap(~tissue) +
-    ggtitle("Percent Overrepresented Sequences")
+    ggtitle("Percentage of reads mapped")
 
-  plt4 <- ggplot(plot_df, aes(x = rank, y = total_deduplicated_percentage, color = read)) +
-    geom_line() +
-    theme_bw() +
-    facet_wrap(~tissue) +
-    ggtitle("Total Deduplicated Percentage")
+  print(plt1)
 
-  print((plt1 + plt2) / (plt3 + plt4))
-
-  # TODO do per base
-  plt5 <- ggplot(plot_df, aes(x = rank, y = base_content_deviation_sum, color = read)) +
-    geom_line() +
-    theme_bw() +
-    facet_wrap(~tissue) +
-    ggtitle("Total deviation from expected base proportions")
-
-  # TODO fix colors
-  plt6 <- ggplot(fastqc_data$gc_distribution,
-                 aes(x = percent_gc_content, y = percent_sequences,
-                     group = sample, color = pass_fail)) +
-    geom_line() +
-    theme_bw() +
-    #theme(legend.position = "none") +
-    scale_color_manual(values = c(FAIL = "red", WARN = "orange", PASS = "green")) +
-    facet_wrap(~tissue) +
-    ggtitle("Per-Sequence GC Content")
-
-  corr_mat <- fastqc_stats |>
-    dplyr::select(where(is.numeric), -num_poor_quality_sequences) |>
-    as.matrix() |>
+  corr_mat <- multiqc_stats |>
+    dplyr::select(where(is.numeric), -samtools_reads_QC_failed_percent) |>
     cor()
 
   corrplot::corrplot(corr_mat)
 
-  # percent_overrepresented_sequences, base_content_deviation_sum,
-  # total_deduplicated_percentage, and percent_gc_content are all highly
-  # correlated, so we only use one criteria instead of checking all of them.
-  # Using base_content_deviation_sum to match Mayo's pipeline.
-  base_content <- fastqc_stats |>
-    dplyr::select(tissue, read, base_content_deviation_sum) |>
-    dplyr::group_by(tissue, read) |>
-    dplyr::summarize(IQR1.5 = IQR(base_content_deviation_sum),
-                     Q3 = quantile(base_content_deviation_sum, 0.75),
-                     upper_limit = Q3 + IQR1.5,
-                     .groups = "drop") |>
-    merge(fastqc_stats) |>
-    subset(base_content_deviation_sum > upper_limit)
+  reads_mapped_fail <- multiqc_stats |>
+    subset(samtools_reads_mapped_percent < reads_mapped_thresh) |>
+    pull(specimenID)
 
-  # Upper limit: Q3 + IQR1.5
+  reads_mapped_outliers <- multiqc_stats |>
+    mutate(is_outlier = is_outlier_IQR(samtools_reads_mapped_percent, tail = "lower")) |>
+    subset(is_outlier == TRUE) |>
+    pull(specimenID)
+
+  metadata$reads_mapped_valid <- !(metadata$specimenID %in% reads_mapped_fail)
+  metadata$reads_mapped_warn <- metadata$specimenID %in% reads_mapped_outliers
+
+  return(metadata)
 }
 
 
@@ -519,227 +487,6 @@ validate_DV200 <- function(metadata) {
   metadata
 }
 
-get_gc_content_biomart <- function(gene_list) {
-  mart <- biomaRt::useEnsembl(biomart = "ensembl",
-                              dataset = "hsapiens_gene_ensembl",
-                              version = 109)
-
-  # Note: It is possible to query attribute "percentage_gene_gc_content",
-  # however the percent returned by Biomart is for the entire gene sequence,
-  # including introns. We want the GC content of exons only.
-  gene_info <- biomaRt::getBM(
-    attributes = c(
-      "ensembl_gene_id", "ensembl_transcript_id", "ensembl_exon_id",
-      "exon_chrom_start",  "exon_chrom_end", "strand", "start_position",
-      "end_position", "external_gene_name", "chromosome_name", "gene_biotype",
-      "transcript_biotype"
-    ),
-    filters = "ensembl_gene_id",
-    values = gene_list,
-    mart = mart
-  )
-
-  gene_info$hgnc_symbol <- gene_info$external_gene_name
-
-  # Fix strand to be + and - to work with GenomicRanges
-  gene_info$strand <- as.character(gene_info$strand) |>
-    str_replace("-1", "-") |>
-    str_replace("1", "+")
-
-  gene_info <- gene_info |>
-    # "start_position" is gene start. If the gene is on the reverse strand,
-    # coordinates need to be reversed since the sequence returned by Biomart
-    # is the reverse complement instead of the forward strand.
-    mutate(start = case_match(strand,
-                              "+" ~ exon_chrom_start - start_position + 1,
-                              "-" ~ end_position - exon_chrom_end + 1),
-           end = case_match(strand,
-                            "+" ~ exon_chrom_end - start_position + 1,
-                            "-" ~ end_position - exon_chrom_start + 1))
-
-  seqs <- getSequence(id = unique(gene_info$ensembl_gene_id),
-                      type = "ensembl_gene_id",
-                      seqType = "gene_exon_intron",
-                      mart = mart)
-
-  seqs2 <- DNAStringSet(seqs$gene_exon_intron)
-  names(seqs2) <- seqs$ensembl_gene_id
-
-  grange <- GenomicRanges::makeGRangesFromDataFrame(
-    gene_info,
-    keep.extra.columns = TRUE,
-    seqnames.field = "ensembl_gene_id"
-  )
-  grange$ensembl_gene_id <- as.character(seqnames(grange))
-
-  message("Calculating length and GC content for each gene...")
-  gene_data <- .calculate_gc_content(grange, seqs2)
-
-  message("Calculating length and GC content for each transcript...")
-  transcript_data <- .calculate_gc_content(grange, seqs2, by_transcript = TRUE)
-
-  return(list("genes" = gene_data, "transcripts" = transcript_data))
-}
-
-
-# Alternate to biomart ---------------------------------------------------------
-
-# Uses original GTF and FASTA files as input instead of querying Biomart. This
-# is the preferred method since Biomart doesn't keep annotations on all genes
-# in the reference and it occasionally doesn't respond to requests.
-
-# GTF file: https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_43/gencode.v43.primary_assembly.annotation.gtf.gz
-# FASTA file: https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_43/GRCh38.primary_assembly.genome.fa.gz
-get_gc_content_gtf <- function(gtf_file, fasta_file) {
-  message("Importing GTF and FASTA data...")
-  # Import GTF and FASTA once, use for both gene-level and transcript-level calculations
-  gtf <- rtracklayer::import(gtf_file,
-                             format = "gtf",
-                             feature.type = "exon")
-
-  # Some renames to match Biomart
-  gtf$ensembl_gene_id <- gtf$gene_id
-  gtf$transcript_id <- gtf$transcript_id
-  gtf$chromosome_name <- as.character(seqnames(gtf))
-  gtf$hgnc_symbol <- gtf$gene_name
-  gtf$gene_biotype <- gtf$gene_type
-  gtf$transcript_biotype <- gtf$transcript_type
-
-  fasta <- rtracklayer::import(fasta_file,
-                               format = "fasta",
-                               type = "DNA")
-  # Change chromosome names from things like "chr2 2" to "chr2" to match
-  # GTF file
-  names(fasta) <- str_replace(names(fasta), " .*", "")
-
-  message("Calculating length and GC content for each gene...")
-  gene_data <- .calculate_gc_content(gtf, fasta)
-
-  message("Calculating length and GC content for each transcript...")
-  transcript_data <- .calculate_gc_content(gtf, fasta, by_transcript = TRUE)
-
-  return(list("genes" = gene_data, "transcripts" = transcript_data))
-}
-
-
-# Helper function to calculate GC content and gene [or transcript] length.
-#
-# Arguments:
-#   ranges_obj - A `GRanges` object containing the start and end coordinates of
-#     each exon for each gene. Overlapping exon coordinates should be merged
-#     with `reduce()` first. This object must contain either an
-#     `ensembl_transcript_id` and/or `ensembl_gene_id` metadata column,
-#     depending on whether GC content/length are being calculated for
-#     transcripts or for genes. It should also have an `hgnc_symbol` column.
-#     Values in `seqnames(ranges_obj)` must match the values in
-#     `names(sequences)`.
-#   sequences - a `DNAStringSet` object where each item is a `DNAString`
-#     containing a sequence to subset exon regions from. `names(sequences)`
-#     must match the values in `seqnames(ranges_obj)`.
-#
-# If the original input was imported from GTF and FASTA files, each `DNAString`
-# in `sequences` should be the sequence of an entire chromosome, and the
-# coordinates in `ranges_obj` should be relative to the start of the chromosome,
-# which is the default in GTF files.
-#
-# If the original input was from Biomart, each `DNAString` in `sequences` should
-# be the sequence of a single gene, and the coordinates in `ranges_obj` should
-# be relative to the start of the gene. Note that for genes on the reverse
-# strand, Biomart returns the gene sequence as the reverse complement of the
-# reference strand, so that position 1 on the reference strand is position
-# <gene_length> on the reverse strand, and position <gene_length> of the
-# reference strand is position 1 of the reverse strand. However, the coordinates
-# given by Biomart are relative to the reference sequence. This means that one
-# of two adjustments need to be made *prior* to calling this function.
-# Either:
-#   1. `sequences` needs to be updated so that the sequence for every gene on
-#      the negative/reverse strand is reverse-complemented,
-# or
-#   2. coordinates for exons on the reverse strand need to be adjusted to be
-#      relative to the start of reverse complement sequence, e.g. if Biomart
-#      returns coordinates `start = 3` and `end = 10`, the start position is
-#      now the *end* coordinate relative to the reverse complement strand and is
-#      adjusted as position <gene_length - 3 + 1>. The original end position is
-#      now the start coordinate and is adjusted as <gene_length - 10 + 1>.
-#
-# No such adjustment is necessary for data from GTF and FASTA files, as the
-# sequences are always the reference strand.
-.calculate_gc_content <- function(ranges_obj, sequences, by_transcript = FALSE) {
-  # Genes will be a GRangesList where each list item is a GRanges object for a
-  # specific gene [or transcript]. The GRanges object will have one or more ranges in it
-  # corresponding to the de-duplicated ranges for all exonic regions in that
-  # gene/transcript
-  id_field <- ifelse(by_transcript, "ensembl_transcript_id", "ensembl_gene_id")
-  genes <- GenomicRanges::split(ranges_obj,
-                                f = mcols(ranges_obj)[[id_field]]) |>
-    GenomicRanges::reduce()
-
-  gene_length <- sum(width(genes))
-
-  # Creates a DNAStringSetList where each list item is a set of sequences
-  # (DNAStringSet) for a specific gene, corresponding to the exonic regions in
-  # that gene
-  exon_seqs <- getSeq(sequences, genes)
-
-  gc <- sapply(exon_seqs, function(gene) {
-    # Count all bases across all exonic sequences for this single gene
-    gc_counts <- colSums(alphabetFrequency(gene))
-
-    # Proportion of C and G bases. Some values in the sequence might be "N" and
-    # we don't count "N" in the total so we can't use the calculated gene length
-    # in the denominator
-    sum(gc_counts[c("C", "G")]) / sum(gc_counts[c("A", "C", "G", "T")])
-  })
-
-  if (by_transcript) {
-    # Collapse ranges_obj to transcript level and saves some extra fields
-    fields_keep <- c("ensembl_gene_id", "ensembl_transcript_id", "hgnc_symbol",
-                     "gene_biotype", "transcript_biotype", "chromosome_name")
-  } else {
-    # No transcript ID, collapses to gene level
-    fields_keep <- c("ensembl_gene_id", "hgnc_symbol", "gene_biotype",
-                     "chromosome_name")
-  }
-
-  fields_keep <- intersect(fields_keep, colnames(mcols(ranges_obj)))
-
-  # Get data frame with one row per gene [or transcript] and add the calculated
-  # length and GC content. Some columns are re-named to match how they are
-  # named in Biomart
-  gene_final <- ranges_obj |>
-    as.data.frame() |>
-    dplyr::select(all_of(fields_keep)) |>
-    distinct() |>
-    # Make sure gene length and gc are in the same order as the IDs in this data frame
-    mutate(
-      gene_length = gene_length[.data[[id_field]]],
-      percent_gc_content = gc[.data[[id_field]]],
-      # Some HGNC symbols might have been assigned the Ensembl ID because there's
-      # no symbol for that gene. This fixes those to be blank.
-      hgnc_symbol = case_when(
-        grepl("ENSG00", hgnc_symbol) ~ "",
-        .default = hgnc_symbol
-      )
-    ) |>
-    # Sort for neatness and easier diff in case of updates
-    arrange(ensembl_gene_id)
-
-  if (by_transcript) {
-    # Change "gene_length" to "transcript_length"
-    gene_final <- gene_final |>
-      dplyr::rename(transcript_length = gene_length)
-
-    out_file <- file.path("data", "transcript_lengths_gc.csv")
-  } else {
-    out_file <- file.path("data", "gene_lengths_gc.csv")
-  }
-
-  # Save results for later
-  write.csv(gene_final, out_file, row.names = FALSE, quote = FALSE)
-
-  return(gene_final)
-}
-
 
 download_multiqc_json <- function(syn_id) {
   synLogin()
@@ -771,9 +518,8 @@ download_multiqc_json <- function(syn_id) {
   }
 
   # TODO decide on:
-  # multiqc_samtools_stats: average_quality?, insert_size_average?
   # multiqc_samtools_flagstat: ??
-  # multiqc_fastqc: %GC, total_deduplicated_percentage <-- compare to fastqc data
+  # multiqc_fastqc: %GC, total_deduplicated_percentage <-- identical to fastqc data, but phred and base content not available
 
   picard_stats <- data$multiqc_picard_dups |>
     reformat_stats(prefix = "picard", cols_keep = PERCENT_DUPLICATION) |>

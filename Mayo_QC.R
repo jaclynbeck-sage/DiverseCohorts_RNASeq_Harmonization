@@ -1,6 +1,7 @@
 library(edgeR)
 source("helper_functions.R")
 
+# TODO counts matrix is missing 26 samples, all sample exchanges
 metadata <- download_metadata()
 counts <- download_rsem("syn64176419")
 
@@ -17,13 +18,13 @@ fastqc_data <- lapply(fastqc_data, function(df) {
   merge(dplyr::select(metadata, specimenID, tissue), df)
 })
 
-multiqc_stats <- subset(multiqc_stats, specimenID %in% metadata$specimenID)
+multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
 
-stopifnot(all(duplicated(metadata$specimenID) == FALSE))
+stopifnot(length(unique(metadata$specimenID)) == nrow(metadata))
 
 orig_size <- ncol(counts)
 
-counts_log <- lognorm(counts)
+counts_log <- simple_lognorm(counts)
 
 metadata <- validate_fastqc(metadata, fastqc_data)
 metadata <- validate_sex(metadata, counts_log)
@@ -41,7 +42,10 @@ metadata <- validate_DV200(metadata)
 
 # Save samples that passed QC
 
-metadata$valid <- metadata$sex_valid & metadata$pca_valid & metadata$dv200_valid
+metadata$valid <- metadata$phred_score_valid & metadata$sex_valid &
+  metadata$pca_valid & metadata$dv200_valid
+# TODO warnings
+
 print(table(metadata$tissue, metadata$valid))
 
 metadata <- subset(metadata, valid == TRUE)

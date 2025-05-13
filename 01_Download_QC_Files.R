@@ -8,32 +8,43 @@
 source("helper_functions.R")
 
 QC_folder <- file.path("data", "QC")
+configs <- config::get(file = "config.yml")
 
 # FastQC output ----------------------------------------------------------------
 
-columbia_fastqc <- download_fastq("Columbia", "syn66353726", load_saved_stats = TRUE)
+columbia_fastqc <- download_fastqc(configs$Columbia, load_saved_stats = TRUE)
 saveRDS(columbia_fastqc, file.path(QC_folder, "Columbia_fastqc_stats.rds"))
 
-mayo_emory_fastqc <- download_fastq("Mayo_Emory", "syn66354409", load_saved_stats = TRUE)
+mayo_emory_fastqc <- download_fastqc(configs$Mayo_Emory, load_saved_stats = TRUE)
 saveRDS(mayo_emory_fastqc, file.path(QC_folder, "Mayo_Emory_fastqc_stats.rds"))
 
-mssm_fastqc <- download_fastq("MSSM", "syn66354135", load_saved_stats = TRUE)
+mssm_fastqc <- download_fastqc(configs$MSSM, load_saved_stats = TRUE)
 saveRDS(mssm_fastqc, file.path(QC_folder, "MSSM_fastqc_stats.rds"))
 
-rush_fastqc <- download_fastq("Rush", "syn66358698", load_saved_stats = TRUE)
+rush_fastqc <- download_fastqc(configs$Rush, load_saved_stats = TRUE)
 saveRDS(rush_fastqc, file.path(QC_folder, "Rush_fastqc_stats.rds"))
 
 
 # MultiQC output ---------------------------------------------------------------
 
-columbia_multiqc <- download_multiqc_json("syn64558076")
+columbia_multiqc <- download_multiqc_json(configs$Columbia$multiqc_json_synid)
 saveRDS(columbia_multiqc, file.path(QC_folder, "Columbia_multiqc_stats.rds"))
 
-mayo_emory_multiqc <- download_multiqc_json("syn64558505")
+mayo_emory_multiqc <- download_multiqc_json(configs$Mayo_Emory$multiqc_json_synid)
 saveRDS(mayo_emory_multiqc, file.path(QC_folder, "Mayo_Emory_multiqc_stats.rds"))
 
-mssm_multiqc <- download_multiqc_json("syn64558496")
+mssm_multiqc <- download_multiqc_json(configs$MSSM$multiqc_json_synid)
 saveRDS(mssm_multiqc, file.path(QC_folder, "MSSM_multiqc_stats.rds"))
 
-rush_multiqc <- download_multiqc_json("syn64558758")
+rush_multiqc <- download_multiqc_json(configs$Rush$multiqc_json_synid)
 saveRDS(rush_multiqc, file.path(QC_folder, "Rush_multiqc_stats.rds"))
+
+
+# Gene length and GC content ---------------------------------------------------
+
+gc_content <- get_gc_content_gtf(configs$gtf_file, configs$fasta_file, include_introns = FALSE)
+
+write.csv(gc_content, file.path("data", "gene_metadata.csv"),
+          row.names = FALSE, quote = FALSE)
+
+# TODO upload to Synapse

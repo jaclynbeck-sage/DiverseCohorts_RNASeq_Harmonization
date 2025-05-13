@@ -1,44 +1,41 @@
-library(edgeR)
 source("helper_functions.R")
 
-metadata <- download_metadata()
-counts <- download_rsem("syn64176441")
+configs <- config::get(file = "config.yml")
+
+metadata <- download_metadata(configs)
+counts <- download_rsem(configs$Rush$count_matrix_synid)
 
 fastqc_data <- readRDS(file.path("data", "QC", "Rush_fastqc_stats.rds"))
-fastqc_stats <- fastqc_data$fastq_summary
-gc_distribution <- fastqc_data$gc_distribution
-
 multiqc_stats <- readRDS(file.path("data", "QC", "Rush_multiqc_stats.rds"))
-
-gene_info <- read.csv(file.path("data", "gene_lengths_gc.csv"))
+gene_info <- read.csv(file.path("data", "gene_metadata.csv"))
 
 metadata <- subset(metadata, specimenID %in% colnames(counts))
 counts <- counts[, metadata$specimenID]
 
-# Remove the duplicate samples from Rush -- there will be 4 files instead of 2
-# for these specimen IDs. The files to remove are all labeled as "<id>_S3xx"
-dupes <- which(table(fastq_summary$specimenID) == 4)
-to_remove <- lapply(names(dupes), function(id) {
-  grep(paste0(id, "_S3[0-9]+"), fastq_summary$sample, value = TRUE)
+# Remove the duplicate samples from Rush
+to_remove <- lapply(configs$Rush$remove_samples_fastqc, function(id) {
+  grep(id, fastqc_data$basic_statistics$sample, value = TRUE)
 })
 
-fastq_summary <- subset(fastq_summary,
-                        specimenID %in% metadata$specimenID &
-                          !(sample %in% unlist(to_remove))) |>
-  mutate(specimenID = str_replace(specimenID, "_S[0-9]+.*", ""))
-gc_distribution <- subset(gc_distribution,
-                          sample %in% fastq_summary$sample)
+fastqc_data <- lapply(fastqc_data, function(df) {
+  df <- subset(df, !(sample %in% unlist(to_remove)))
+  merge(dplyr::select(metadata, specimenID, tissue), df)
+})
 
-multiqc_stats <- subset(multiqc_stats, specimenID %in% metadata$specimenID &
-                          !(sample %in% unlist(to_remove))) |>
-  mutate(specimenID = str_replace(specimenID, "_S[0-9]+.*", ""))
+to_remove <- str_replace(unlist(to_remove), "_(1|2)$", "")
 
-stopifnot(all(duplicated(metadata$specimenID) == FALSE))
+multiqc_stats <- subset(multiqc_stats, !(specimenID %in% to_remove)) |>
+  mutate(specimenID = str_replace(specimenID, "_S[0-9]+", ""))
+multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
+
+stopifnot(length(unique(metadata$specimenID)) == nrow(metadata))
 
 orig_size <- ncol(counts)
 
 counts_log <- simple_lognorm(counts)
 
+metadata <- validate_fastqc(metadata, fastqc_data)
+metadata <- validate_multiqc(metadata, multiqc_stats)
 metadata <- validate_sex(metadata, counts_log)
 metadata <- outlier_pca(metadata, counts_log, gene_info)
 
@@ -54,7 +51,10 @@ metadata <- validate_DV200(metadata)
 
 # Save samples that passed QC
 
-metadata$valid <- metadata$sex_valid & metadata$pca_valid & metadata$dv200_valid
+metadata$valid <- metadata$phred_score_valid & metadata$sex_valid &
+  metadata$pca_valid & metadata$dv200_valid
+# TODO warnings
+
 print(table(metadata$tissue, metadata$valid))
 
 metadata <- subset(metadata, valid == TRUE)

@@ -1,0 +1,40 @@
+default:
+  # General variables for all data sets
+  gtf_file: "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_43/gencode.v43.primary_assembly.annotation.gtf.gz"
+  fasta_file: "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_43/GRCh38.primary_assembly.genome.fa.gz"
+  gene_metadata_synid: "" # TODO
+  individual_metadata_synid: "syn51757646"
+  biospecimen_metadata_synid: "syn51757645"
+  assay_metadata_synid: "syn51757643"
+
+  # Dataset-specific variables
+  Columbia:
+    name: "Columbia"
+    fastqc_folder_synid: "syn66498852"
+    multiqc_json_synid: "syn64558076"
+    count_matrix_synid: "syn64289221"
+
+  Mayo_Emory:
+    name: "Mayo_Emory"
+    fastqc_folder_synid: "syn66498946"
+    multiqc_json_synid: "syn64558505"
+    count_matrix_synid: "syn64176419"
+
+  MSSM:
+    name: "MSSM"
+    fastqc_folder_synid: "syn66499292"
+    multiqc_json_synid: "syn64558496"
+    count_matrix_synid: "syn64176431"
+
+  Rush:
+    name: "Rush"
+    fastqc_folder_synid: "syn66499471"
+    multiqc_json_synid: "syn64558758"
+    count_matrix_synid: "syn64176441"
+    # These specimen IDs from batch B74 need to be removed
+    remove_specimenIDs: ["Div_487", "Div_498", "Div_500", "Div_503", "Div_508", "Div_509", "Div_545"]
+    remove_specimenIDs_batch: "B74"
+    # Names of the samples to remove as they appear in FastQC data
+    remove_samples_fastqc: ["Div_487_S300", "Div_498_S310", "Div_500_S312",
+                            "Div_503_S314", "Div_508_S319", "Div_509_S320",
+                            "Div_545_S355"]

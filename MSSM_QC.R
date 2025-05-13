@@ -1,6 +1,8 @@
 library(edgeR)
 source("helper_functions.R")
 
+# TODO counts matrix is missing 8 samples, all labeled as sample exchanges but
+# from MSSM
 metadata <- download_metadata()
 counts <- download_rsem("syn64176431")
 
