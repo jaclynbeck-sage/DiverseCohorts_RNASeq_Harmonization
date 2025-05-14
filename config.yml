@@ -7,6 +7,14 @@ default:
   biospecimen_metadata_synid: "syn51757645"
   assay_metadata_synid: "syn51757643"
 
+  # Thresholds for validation
+  thresholds:
+    phred: 20
+    reads_mapped: 70
+    sex: 3
+    DV200: 60
+    RIN: 2.5
+
   # Dataset-specific variables
   Columbia:
     name: "Columbia"

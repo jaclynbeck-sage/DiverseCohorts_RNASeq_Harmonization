@@ -187,20 +187,32 @@ remap_columbia_fastqc <- function(fastqc_files) {
 # tail can be "upper", "lower", or "both"
 # TODO move to library
 is_outlier_IQR <- function(data, tail = "both") {
-  iqr <- IQR(data)
-  q1 <- quantile(data, 0.25)
-  q3 <- quantile(data, 0.75)
+  iqr <- IQR(data, na.rm = TRUE)
+  q1 <- quantile(data, 0.25, na.rm = TRUE)
+  q3 <- quantile(data, 0.75, na.rm = TRUE)
 
   switch(
     tail,
     "both" = (data < q1 - 1.5 * iqr) | (data > q3 + 1.5 * iqr),
     "upper" = data > q3 + 1.5 * iqr,
     "lower" = data < q1 - 1.5 * iqr
-  )
+  ) | is.na(data)
+}
+
+is_outlier_SD <- function(data, n_sds = 4, tail = "both") {
+  mean_d <- mean(data, na.rm = TRUE)
+  stdev <- n_sds * sd(data, na.rm = TRUE)
+
+  switch(
+    tail,
+    "both" = (data < mean_d - stdev) | (data > mean_d + stdev),
+    "upper" = data > mean_d + stdev,
+    "lower" = data < mean_d - stdev
+  ) | is.na(data)
 }
 
 
-validate_fastqc <- function(metadata, fastqc_data, phred_threshold = 20) {
+validate_fastqc <- function(metadata, fastqc_data, thresholds) {
   # TODO jitter the outlier points
   plt1 <- ggplot(fastqc_data$basic_statistics,
                  aes(x = tissue, y = percent_gc_content, fill = read)) +
@@ -229,7 +241,7 @@ validate_fastqc <- function(metadata, fastqc_data, phred_threshold = 20) {
 
   # Any base falling below the Phred threshold marks the sample as failing QC
   phred_fail <- fastqc_data$phred_per_base |>
-    subset(Median < phred_threshold) |>
+    subset(Median < thresholds$phred) |>
     pull(specimenID)
 
   phred_outliers <- fastqc_data$phred_per_base |>
@@ -249,7 +261,7 @@ validate_fastqc <- function(metadata, fastqc_data, phred_threshold = 20) {
 # In the absence of RSeQC data, we only check percentage of reads mapped for
 # now. Could consider duplicated reads, rsem uniquely aligned, and cutadapt
 # trimming, all of which have clear outliers.
-validate_multiqc <- function(metadata, multiqc_stats, reads_mapped_thresh = 70) {
+validate_multiqc <- function(metadata, multiqc_stats, thresholds) {
   plt1 <- ggplot(multiqc_stats,
                  aes(x = tissue, y = samtools_reads_mapped_percent, fill = tissue)) +
     geom_boxplot() +
@@ -265,7 +277,7 @@ validate_multiqc <- function(metadata, multiqc_stats, reads_mapped_thresh = 70) 
   corrplot::corrplot(corr_mat)
 
   reads_mapped_fail <- multiqc_stats |>
-    subset(samtools_reads_mapped_percent < reads_mapped_thresh) |>
+    subset(samtools_reads_mapped_percent < thresholds$reads_mapped) |>
     pull(specimenID)
 
   reads_mapped_outliers <- multiqc_stats |>
@@ -280,7 +292,7 @@ validate_multiqc <- function(metadata, multiqc_stats, reads_mapped_thresh = 70) 
 }
 
 
-validate_sex <- function(metadata, data, sex_thresh = 2.0) {
+validate_sex <- function(metadata, data, thresholds) {
   # source: https://www.ncbi.nlm.nih.gov/pubmed/23829492
   y_genes <- c(RPS4Y1 = "ENSG00000129824",
                EIF1AY = "ENSG00000198692",
@@ -300,10 +312,18 @@ validate_sex <- function(metadata, data, sex_thresh = 2.0) {
     dplyr::rename(XIST = ENSG00000229807) %>%
     mutate(
       mean_Y = rowMeans(dplyr::select(., all_of(y_genes))),
-      est_sex = case_when(mean_Y > sex_thresh ~ "male",
+      est_sex = case_when(mean_Y > thresholds$sex ~ "male",
                           .default = "female"),
       sex_valid = sex == est_sex
     ) %>%
+    group_by(sex) %>%
+    mutate(
+      sex_warn = sex_valid & is_outlier_SD(mean_Y),
+      status = case_when(sex_valid & !sex_warn ~ "Pass",
+                         sex_warn ~ "Warning",
+                         .default = "Fail")
+    ) %>%
+    ungroup() %>%
     # Put FALSE last so they are plotted on top of other dots
     arrange(desc(sex_valid))
 
@@ -324,15 +344,14 @@ validate_sex <- function(metadata, data, sex_thresh = 2.0) {
     theme_bw() +
     theme(legend.position = "bottom")
 
-  plt4 <- ggplot(sex_check, aes(x = XIST, y = mean_Y, color = sex_valid)) +
-    geom_point(size = ifelse(sex_check$sex_valid, 0.5, 1)) +
+  status_colors <- c("Pass" = "black", "Warning" = "orange", "Fail" = "red")
+  plt4 <- ggplot(sex_check, aes(x = XIST, y = mean_Y, color = status)) +
+    geom_point(size = ifelse(sex_check$sex_valid & !sex_check$sex_warn, 0.5, 1)) +
     theme_bw() +
     theme(legend.position = "bottom") +
-    scale_color_manual(values = c("TRUE" = "black", "FALSE" = "red")) +
-    geom_hline(yintercept = sex_thresh, linetype = "dotdash", color = "blue")
-    #geom_label_repel(aes(label = ifelse(!sex_valid, specimenID, NA)),
-    #                 segment.color = "darkgray",
-    #                 na.rm = TRUE)
+    scale_color_manual(values = status_colors) +
+    geom_hline(yintercept = thresholds$sex, linetype = "dotdash",
+               color = "red", alpha = 0.8)
 
   print(plt1 + plt2 + plt3 + plt4)
 
@@ -340,6 +359,7 @@ validate_sex <- function(metadata, data, sex_thresh = 2.0) {
   sex_check <- sex_check[metadata$specimenID, ]
 
   metadata$sex_valid <- sex_check$sex_valid
+  metadata$sex_warn <- sex_check$sex_warn
 
   metadata
 }
@@ -457,7 +477,7 @@ outlier_pca <- function(metadata, data, gene_info, n_sds = 4) {
 }
 
 
-validate_DV200 <- function(metadata) {
+validate_DV200 <- function(metadata, thresholds) {
   plt1 <- ggplot(metadata, aes(x = tissue, y = RIN, fill = tissue)) +
     geom_boxplot(outliers = FALSE) +
     geom_jitter(size = 0.5) +
@@ -474,15 +494,17 @@ validate_DV200 <- function(metadata) {
 
   plt4 <- ggplot(metadata, aes(x = rank(DV200), y = DV200, color = tissue)) +
     geom_point(size = 0.5) +
-    geom_hline(yintercept = 60) +
+    geom_hline(yintercept = thresholds$DV200) +
     theme_bw()
 
   print((plt1 + plt2) / (plt3 + plt4))
 
-
-  # TODO arbitrary threshold, need to look at other data sources. 80 is where
-  # the decrease starts.
-  metadata$dv200_valid <- metadata$DV200 > 60
+  metadata$DV200_valid <- case_when(
+    !is.na(metadata$DV200) ~ metadata$DV200 > thresholds$DV200,
+    # If DV200 is NA, use RIN instead
+    is.na(metadata$DV200) & !is.na(metadata$RIN) ~ metadata$RIN > thresholds$RIN,
+    # If both are NA, fail QC
+    .default = FALSE)
 
   metadata
 }

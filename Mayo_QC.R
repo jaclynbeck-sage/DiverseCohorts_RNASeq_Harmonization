@@ -1,18 +1,19 @@
-library(edgeR)
 source("helper_functions.R")
 
+configs <- config::get(file = "config.yml")
+
 # TODO counts matrix is missing 26 samples, all sample exchanges
-metadata <- download_metadata()
-counts <- download_rsem("syn64176419")
+metadata <- download_metadata(configs)
+counts <- download_rsem(configs$Mayo_Emory$count_matrix_synid)
 
 fastqc_data <- readRDS(file.path("data", "QC", "Mayo_Emory_fastqc_stats.rds"))
-
 multiqc_stats <- readRDS(file.path("data", "QC", "Mayo_Emory_multiqc_stats.rds"))
-
-gene_info <- read.csv(file.path("data", "gene_lengths_gc.csv"))
+gene_info <- read.csv(file.path("data", "gene_metadata.csv"))
 
 metadata <- subset(metadata, specimenID %in% colnames(counts))
 counts <- counts[, metadata$specimenID]
+
+stopifnot(length(unique(metadata$specimenID)) == nrow(metadata))
 
 fastqc_data <- lapply(fastqc_data, function(df) {
   merge(dplyr::select(metadata, specimenID, tissue), df)
@@ -20,30 +21,21 @@ fastqc_data <- lapply(fastqc_data, function(df) {
 
 multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
 
-stopifnot(length(unique(metadata$specimenID)) == nrow(metadata))
-
 orig_size <- ncol(counts)
 
 counts_log <- simple_lognorm(counts)
 
 metadata <- validate_fastqc(metadata, fastqc_data)
+metadata <- validate_multiqc(metadata, multiqc_stats)
 metadata <- validate_sex(metadata, counts_log)
 metadata <- outlier_pca(metadata, counts_log, gene_info)
-
-metadata$lib_size <- colSums(counts)
-
-ggplot(metadata, aes(x = tissue, y = lib_size, fill = tissue)) +
-  geom_boxplot(outliers = FALSE) +
-  geom_jitter(size = 0.5) +
-  theme_bw()
-
 metadata <- validate_DV200(metadata)
 
 
 # Save samples that passed QC
 
-metadata$valid <- metadata$phred_score_valid & metadata$sex_valid &
-  metadata$pca_valid & metadata$dv200_valid
+metadata$valid <- metadata$phred_score_valid & metadata$reads_mapped_valid &
+  metadata$sex_valid & metadata$pca_valid & metadata$dv200_valid
 # TODO warnings
 
 print(table(metadata$tissue, metadata$valid))

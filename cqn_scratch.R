@@ -13,8 +13,7 @@ data$samples$group <- factor(paste(data$samples$tissue, data$samples$ADoutcome))
 genes_keep <- filterByExpr(data, group = data$samples$group)
 data <- data[genes_keep, ]
 
-gc_info <- read.csv(file.path("data", "gene_lengths_gc.csv")) |>
-  mutate(ensembl_gene_id = str_replace(ensembl_gene_id, "\\.[0-9]+", "")) |>
+gc_info <- read.csv(file.path("data", "gene_metadata.csv")) |>
   subset(ensembl_gene_id %in% rownames(data))
 
 rownames(gc_info) <- gc_info$ensembl_gene_id
