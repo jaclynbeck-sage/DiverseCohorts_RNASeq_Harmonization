@@ -24,9 +24,7 @@ fastqc_data <- lapply(fastqc_data, function(df) {
   merge(dplyr::select(metadata, specimenID, tissue), df)
 })
 
-to_remove <- str_replace(unlist(to_remove), "_(1|2)$", "")
-
-multiqc_stats <- subset(multiqc_stats, !(specimenID %in% to_remove)) |>
+multiqc_stats <- subset(multiqc_stats, !(specimenID %in% configs$Rush$remove_samples_fastqc)) |>
   mutate(specimenID = str_replace(specimenID, "_S[0-9]+", ""))
 multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
 
@@ -44,18 +42,23 @@ metadata <- validate_DV200(metadata, configs$thresholds)
 
 # Save samples that passed QC
 
-metadata$valid <- metadata$phred_score_valid & metadata$reads_mapped_valid &
-  metadata$sex_valid & metadata$pca_valid & metadata$dv200_valid
-# TODO warnings
+metadata$valid <- Reduce("&", metadata[, grepl("_valid", colnames(metadata))])
+metadata$warn <- Reduce("+", metadata[, grepl("_warn", colnames(metadata))])
+
+metadata$valid <- metadata$valid & metadata$warn < 2
 
 print(table(metadata$tissue, metadata$valid))
 
 metadata <- subset(metadata, valid == TRUE)
 counts <- counts[, metadata$specimenID]
+multiqc_stats <- subset(multiqc_stats, specimenID %in% metadata$specimenID)
 
 message(str_glue("{ncol(counts)} of {orig_size} samples passed QC."))
 
-data_final <- DGEList(counts, samples = metadata, remove.zeros = TRUE)
-data_final <- normLibSizes(data_final, method = "TMM")
+# Remove genes that are all 0's
+zeros <- rowSums(counts) == 0
+
+data_final <- list("metadata" = metadata, "counts" = counts[!zeros, ],
+                   "multiqc_stats" = multiqc_stats)
 
 saveRDS(data_final, file.path("data", "QC", "Rush_qc.rds"))

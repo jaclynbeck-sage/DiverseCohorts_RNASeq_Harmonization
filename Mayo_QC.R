@@ -25,18 +25,19 @@ orig_size <- ncol(counts)
 
 counts_log <- simple_lognorm(counts)
 
-metadata <- validate_fastqc(metadata, fastqc_data)
-metadata <- validate_multiqc(metadata, multiqc_stats)
-metadata <- validate_sex(metadata, counts_log)
+metadata <- validate_fastqc(metadata, fastqc_data, configs$thresholds)
+metadata <- validate_multiqc(metadata, multiqc_stats, configs$thresholds)
+metadata <- validate_sex(metadata, counts_log, configs$thresholds)
 metadata <- outlier_pca(metadata, counts_log, gene_info)
-metadata <- validate_DV200(metadata)
+metadata <- validate_DV200(metadata, configs$thresholds)
 
 
 # Save samples that passed QC
 
-metadata$valid <- metadata$phred_score_valid & metadata$reads_mapped_valid &
-  metadata$sex_valid & metadata$pca_valid & metadata$dv200_valid
-# TODO warnings
+metadata$valid <- Reduce("&", metadata[, grepl("_valid", colnames(metadata))])
+metadata$warn <- Reduce("+", metadata[, grepl("_warn", colnames(metadata))])
+
+metadata$valid <- metadata$valid & metadata$warn < 2
 
 print(table(metadata$tissue, metadata$valid))
 

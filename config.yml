@@ -11,7 +11,8 @@ default:
   thresholds:
     phred: 20
     reads_mapped: 70
-    sex: 3
+    reads_duplicated: 80
+    sex: 2
     DV200: 60
     RIN: 2.5
 

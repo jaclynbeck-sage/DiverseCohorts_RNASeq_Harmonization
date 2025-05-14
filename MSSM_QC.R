@@ -1,47 +1,45 @@
-library(edgeR)
 source("helper_functions.R")
+
+configs <- config::get(file = "config.yml")
 
 # TODO counts matrix is missing 8 samples, all labeled as sample exchanges but
 # from MSSM
-metadata <- download_metadata()
-counts <- download_rsem("syn64176431")
+metadata <- download_metadata(configs)
+counts <- download_rsem(configs$MSSM$count_matrix_synid)
 
 fastqc_data <- readRDS(file.path("data", "QC", "MSSM_fastqc_stats.rds"))
-fastqc_stats <- fastqc_data$fastq_summary
-gc_distribution <- fastqc_data$gc_distribution
-
 multiqc_stats <- readRDS(file.path("data", "QC", "MSSM_multiqc_stats.rds"))
-
-gene_info <- read.csv(file.path("data", "gene_lengths_gc.csv")) |>
-  mutate(ensembl_gene_id = str_replace(ensembl_gene_id, "\\.[0-9]+", ""))
+gene_info <- read.csv(file.path("data", "gene_metadata.csv"))
 
 metadata <- subset(metadata, specimenID %in% colnames(counts))
 counts <- counts[, metadata$specimenID]
-fastqc_stats <- subset(fastqc_stats, specimenID %in% metadata$specimenID)
-multiqc_stats <- subset(multiqc_stats, specimenID %in% metadata$specimenID)
 
-stopifnot(all(duplicated(metadata$specimenID) == FALSE))
+stopifnot(length(unique(metadata$specimenID)) == nrow(metadata))
+
+fastqc_data <- lapply(fastqc_data, function(df) {
+  merge(dplyr::select(metadata, specimenID, tissue), df)
+})
+
+multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
 
 orig_size <- ncol(counts)
 
-counts_log <- lognorm(counts)
+counts_log <- simple_lognorm(counts)
 
-metadata <- validate_sex(metadata, counts_log)
+metadata <- validate_fastqc(metadata, fastqc_data, configs$thresholds)
+metadata <- validate_multiqc(metadata, multiqc_stats, configs$thresholds)
+metadata <- validate_sex(metadata, counts_log, configs$thresholds)
 metadata <- outlier_pca(metadata, counts_log, gene_info)
-
-metadata$lib_size <- colSums(counts)
-
-ggplot(metadata, aes(x = tissue, y = lib_size, fill = tissue)) +
-  geom_boxplot(outliers = FALSE) +
-  geom_jitter(size = 0.5) +
-  theme_bw()
-
-metadata <- validate_DV200(metadata)
+metadata <- validate_DV200(metadata, configs$thresholds)
 
 
 # Save samples that passed QC
 
-metadata$valid <- metadata$sex_valid & metadata$pca_valid & metadata$dv200_valid
+metadata$valid <- Reduce("&", metadata[, grepl("_valid", colnames(metadata))])
+metadata$warn <- Reduce("+", metadata[, grepl("_warn", colnames(metadata))])
+
+metadata$valid <- metadata$valid & metadata$warn < 2
+
 print(table(metadata$tissue, metadata$valid))
 
 metadata <- subset(metadata, valid == TRUE)

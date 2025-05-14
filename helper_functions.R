@@ -186,20 +186,20 @@ remap_columbia_fastqc <- function(fastqc_files) {
 
 # tail can be "upper", "lower", or "both"
 # TODO move to library
-is_outlier_IQR <- function(data, tail = "both") {
-  iqr <- IQR(data, na.rm = TRUE)
+is_outlier_IQR <- function(data, tail = "both", IQR_mult = 1.5) {
+  iqr <- IQR(data, na.rm = TRUE) * IQR_mult
   q1 <- quantile(data, 0.25, na.rm = TRUE)
   q3 <- quantile(data, 0.75, na.rm = TRUE)
 
   switch(
     tail,
-    "both" = (data < q1 - 1.5 * iqr) | (data > q3 + 1.5 * iqr),
-    "upper" = data > q3 + 1.5 * iqr,
-    "lower" = data < q1 - 1.5 * iqr
+    "both" = (data < q1 - iqr) | (data > q3 + iqr),
+    "upper" = data > q3 + iqr,
+    "lower" = data < q1 - iqr
   ) | is.na(data)
 }
 
-is_outlier_SD <- function(data, n_sds = 4, tail = "both") {
+is_outlier_SD <- function(data, tail = "both", n_sds = 4) {
   mean_d <- mean(data, na.rm = TRUE)
   stdev <- n_sds * sd(data, na.rm = TRUE)
 
@@ -258,23 +258,14 @@ validate_fastqc <- function(metadata, fastqc_data, thresholds) {
 }
 
 
-# In the absence of RSeQC data, we only check percentage of reads mapped for
-# now. Could consider duplicated reads, rsem uniquely aligned, and cutadapt
-# trimming, all of which have clear outliers.
+# In the absence of RSeQC data, we only check percentage of reads mapped and
+# percentage of duplicated reads for now.
 validate_multiqc <- function(metadata, multiqc_stats, thresholds) {
-  plt1 <- ggplot(multiqc_stats,
-                 aes(x = tissue, y = samtools_reads_mapped_percent, fill = tissue)) +
-    geom_boxplot() +
-    theme_bw() +
-    ggtitle("Percentage of reads mapped")
-
-  print(plt1)
-
   corr_mat <- multiqc_stats |>
     dplyr::select(where(is.numeric), -samtools_reads_QC_failed_percent) |>
     cor()
 
-  corrplot::corrplot(corr_mat)
+  corrplot::corrplot(corr_mat, tl.cex = 0.7)
 
   reads_mapped_fail <- multiqc_stats |>
     subset(samtools_reads_mapped_percent < thresholds$reads_mapped) |>
@@ -285,8 +276,58 @@ validate_multiqc <- function(metadata, multiqc_stats, thresholds) {
     subset(is_outlier == TRUE) |>
     pull(specimenID)
 
+  reads_dupe_fail <- multiqc_stats |>
+    subset(samtools_reads_duplicated_percent > thresholds$reads_duplicated) |>
+    pull(specimenID)
+
+  # Use Q3 + 3*IQR for outliers here
+  reads_dupe_outliers <- multiqc_stats |>
+    mutate(is_outlier = is_outlier_IQR(samtools_reads_duplicated_percent,
+                                       tail = "upper", IQR_mult = 3)) |>
+    subset(is_outlier == TRUE) |>
+    pull(specimenID)
+
   metadata$reads_mapped_valid <- !(metadata$specimenID %in% reads_mapped_fail)
   metadata$reads_mapped_warn <- metadata$specimenID %in% reads_mapped_outliers
+  metadata$reads_duplicated_valid <- !(metadata$specimenID %in% reads_dupe_fail)
+  metadata$reads_duplicated_warn <- metadata$specimenID %in% reads_dupe_outliers
+
+  multiqc_stats <- multiqc_stats |>
+    mutate(
+      mapped_status = case_when(
+        specimenID %in% reads_mapped_fail ~ "Fail",
+        specimenID %in% reads_mapped_outliers ~ "Warn",
+        .default = "Pass"
+      ),
+      duplicated_status = case_when(
+        specimenID %in% reads_dupe_fail ~ "Fail",
+        specimenID %in% reads_dupe_outliers ~ "Warn",
+        .default = "Pass"
+      )
+    )
+
+  stat_colors <- c("Pass" = "black", "Warn" = "orange", "Fail" = "red")
+  plt1 <- ggplot(multiqc_stats,
+                 aes(x = tissue, y = samtools_reads_mapped_percent, fill = tissue)) +
+    geom_boxplot(outliers = FALSE, width = 0.1) +
+    geom_jitter(aes(color = mapped_status),
+                width = 0.3,
+                size = ifelse(multiqc_stats$mapped_status == "Pass", 0.5, 1)) +
+    theme_bw() +
+    scale_color_manual(values = stat_colors) +
+    ggtitle("Percentage of reads mapped")
+
+  plt2 <- ggplot(multiqc_stats,
+                 aes(x = tissue, y = samtools_reads_duplicated_percent, fill = tissue)) +
+    geom_boxplot(outliers = FALSE, width = 0.1) +
+    geom_jitter(aes(color = duplicated_status),
+                width = 0.3,
+                size = ifelse(multiqc_stats$duplicated_status == "Pass", 0.5, 1)) +
+    theme_bw() +
+    scale_color_manual(values = stat_colors) +
+    ggtitle("Percentage of reads duplicated")
+
+  print(plt1 + plt2)
 
   return(metadata)
 }
@@ -303,29 +344,22 @@ validate_sex <- function(metadata, data, thresholds) {
   # Strip any version numbers off of the gene names
   rownames(data) <- str_replace(rownames(data), "\\.[0-9]+", "")
 
-  sex_check <- metadata %>%
-    dplyr::select(specimenID, sex) %>%
+  sex_check <- metadata |>
+    dplyr::select(specimenID, sex) |>
     merge(
       t(data[sex_genes, ]),
       by.x = "specimenID", by.y = "row.names"
-    ) %>%
-    dplyr::rename(XIST = ENSG00000229807) %>%
+    ) |>
+    dplyr::rename(XIST = ENSG00000229807) |>
     mutate(
-      mean_Y = rowMeans(dplyr::select(., all_of(y_genes))),
+      mean_Y = rowMeans(across(all_of(y_genes))),
       est_sex = case_when(mean_Y > thresholds$sex ~ "male",
                           .default = "female"),
       sex_valid = sex == est_sex
-    ) %>%
-    group_by(sex) %>%
-    mutate(
-      sex_warn = sex_valid & is_outlier_SD(mean_Y),
-      status = case_when(sex_valid & !sex_warn ~ "Pass",
-                         sex_warn ~ "Warning",
-                         .default = "Fail")
-    ) %>%
-    ungroup() %>%
+    ) |>
     # Put FALSE last so they are plotted on top of other dots
-    arrange(desc(sex_valid))
+    arrange(desc(sex_valid)) |>
+    as.data.frame()
 
   plt1 <- ggplot(sex_check, aes(x = sex, y = XIST, fill = sex)) +
     geom_boxplot(width = 0.25, outliers = FALSE) +
@@ -344,9 +378,9 @@ validate_sex <- function(metadata, data, thresholds) {
     theme_bw() +
     theme(legend.position = "bottom")
 
-  status_colors <- c("Pass" = "black", "Warning" = "orange", "Fail" = "red")
-  plt4 <- ggplot(sex_check, aes(x = XIST, y = mean_Y, color = status)) +
-    geom_point(size = ifelse(sex_check$sex_valid & !sex_check$sex_warn, 0.5, 1)) +
+  status_colors <- c("TRUE" = "black", "FALSE" = "red")
+  plt4 <- ggplot(sex_check, aes(x = XIST, y = mean_Y, color = sex_valid)) +
+    geom_point(size = ifelse(sex_check$sex_valid, 0.5, 1)) +
     theme_bw() +
     theme(legend.position = "bottom") +
     scale_color_manual(values = status_colors) +
