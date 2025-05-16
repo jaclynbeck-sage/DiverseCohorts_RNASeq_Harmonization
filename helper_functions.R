@@ -277,12 +277,12 @@ validate_multiqc <- function(metadata, multiqc_stats, thresholds) {
     pull(specimenID)
 
   reads_dupe_fail <- multiqc_stats |>
-    subset(samtools_reads_duplicated_percent > thresholds$reads_duplicated) |>
+    subset(picard_PERCENT_DUPLICATION > thresholds$reads_duplicated) |>
     pull(specimenID)
 
   # Use Q3 + 3*IQR for outliers here
   reads_dupe_outliers <- multiqc_stats |>
-    mutate(is_outlier = is_outlier_IQR(samtools_reads_duplicated_percent,
+    mutate(is_outlier = is_outlier_IQR(picard_PERCENT_DUPLICATION,
                                        tail = "upper", IQR_mult = 3)) |>
     subset(is_outlier == TRUE) |>
     pull(specimenID)
@@ -318,7 +318,7 @@ validate_multiqc <- function(metadata, multiqc_stats, thresholds) {
     ggtitle("Percentage of reads mapped")
 
   plt2 <- ggplot(multiqc_stats,
-                 aes(x = tissue, y = samtools_reads_duplicated_percent, fill = tissue)) +
+                 aes(x = tissue, y = picard_PERCENT_DUPLICATION, fill = tissue)) +
     geom_boxplot(outliers = FALSE, width = 0.1) +
     geom_jitter(aes(color = duplicated_status),
                 width = 0.3,
@@ -649,4 +649,47 @@ download_multiqc_json <- function(syn_id) {
   #   insert size inner distance
   #   percent known junctions
   #   80/20 ratio of gene body coverage
+}
+
+
+remove_correlated_variables <- function(cor_mat, na_vars, R2_threshold = 0.5) {
+  r2 <- cor_mat^2
+  diag(r2) <- NA
+
+  r2_melt <- r2
+  r2_melt[upper.tri(r2_melt, diag = TRUE)] <- 0  # Avoids picking up both (a vs b) and (b vs a)
+  r2_melt <- r2_melt |>
+    as.data.frame() |>
+    tibble::rownames_to_column(var = "var1") |>
+    tidyr::pivot_longer(cols = -var1,
+                        names_to = "var2", values_to = "value") |>
+    subset(value >= R2_threshold) |>  # pairs with R^2 > 0.5 (cor ~ 0.7) only
+    dplyr::arrange(desc(value))
+
+  to_remove <- c()
+
+  for (R in 1:nrow(r2_melt)) {
+    vars <- as.character(c(r2_melt$var1[R], r2_melt$var2[R]))
+
+    if (any(vars %in% to_remove)) {
+      # No need to re-check if we're already removing one of these variables
+      next
+    } else {
+      # If either variable has any NA values, and they don't have the same number
+      # of NAs, remove the one with the most NAs
+      if (any(na_vars[1, vars] > 0) && (na_vars[1, vars[1]] != na_vars[1, vars[2]])) {
+        to_remove <- c(to_remove,
+                       vars[which.max(na_vars[1, vars])])
+      } else {
+        cur_vars <- setdiff(rownames(r2), to_remove)
+        mean_r2 <- rowMeans(r2[cur_vars, cur_vars], na.rm = TRUE)
+
+        # Remove the variable with the largest mean R^2 with the other remaining variables
+        to_remove <- c(to_remove,
+                       vars[which.max(mean_r2[vars])])
+      }
+    }
+  }
+
+  return(unique(to_remove))
 }

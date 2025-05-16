@@ -46,7 +46,10 @@ counts <- counts[, metadata$specimenID]
 
 message(str_glue("{ncol(counts)} of {orig_size} samples passed QC."))
 
-data_final <- DGEList(counts, samples = metadata, remove.zeros = TRUE)
-#data_final <- normLibSizes(data_final, method = "TMM")
+# Remove genes that are all 0's
+zeros <- rowSums(counts) == 0
+
+data_final <- list("metadata" = metadata, "counts" = counts[!zeros, ],
+                   "multiqc_stats" = multiqc_stats)
 
 saveRDS(data_final, file.path("data", "QC", "Mayo_qc.rds"))
