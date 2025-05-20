@@ -1,7 +1,7 @@
 source("helper_functions.R")
 
-raw_data <- readRDS(file.path("data", "QC", "Mayo_qc.rds"))
-cqn_data <- readRDS(file.path("data", "cqn", "Mayo_cqn.rds"))
+raw_data <- readRDS(file.path("data", "QC", "Rush_qc.rds"))
+cqn_data <- readRDS(file.path("data", "cqn", "Rush_cqn.rds"))
 
 cqn_plt_data <- lapply(cqn_data, function(cqn_obj) {
   (cqn_obj$y + cqn_obj$offset) |>
@@ -23,6 +23,7 @@ plts <- lapply(names(cqn_plt_data), function(tissue) {
 })
 
 print(plts)
+
 
 # Filter out highly correlated technical variables -----------------------------
 
@@ -55,7 +56,7 @@ tech_vars <- lapply(unique(raw_data$metadata$tissue), function(tissue) {
   cor_mat <- cor(tech_mat, use = "na.or.complete")
 
   vars_remove <- remove_correlated_variables(cor_mat, na_vars)
-  print(paste("Removing", paste(vars_remove, collapse = ", ")))
+  print(paste0(tissue, ": removing ", paste(vars_remove, collapse = ", ")))
 
   tech_vars[tech_vars$tissue == tissue, ] |>
     select(!any_of(vars_remove))
@@ -69,47 +70,87 @@ names(tech_vars) <- unique(raw_data$metadata$tissue)
 # covariates
 
 bio_vars <- raw_data$metadata |>
-  dplyr::rename(ageDeath_binned = ageBin) |>
-  select(-contains("warn"), -contains("valid"), -ageDeathNumeric, -pmiNumeric,
-         -pmiBin, -RINbin, -ageDeath, -pca_group, -individualID_AMPAD_1.0,
-         -DV200, -PMI, -RIN, -rnaBatch, -libraryBatch)
+  select(
+    -contains("warn"), -contains("valid"),
+    -ageDeath, # we want binned ages only
+    -pca_group, -individualID_AMPAD_1.0, -rnaBatch, -libraryBatch, # unneeded
+    -totalReads, -derivedOutcomeBasedOnMayoDx, # unneeded
+    -DV200, -PMI, -RIN, # technical
+    -sampleExchangeOrigin # has 1:1 overlap with cohort
+  )
 
-# Split by tissue, remove columns that are all NA or all have the same value
+# TODO this should be renamed to categorical vars and tech_vars should be numerical vars
+# Split by tissue, remove columns that are all NA, all have the same value, or
+# have the same number of unique values as there are samples
 bio_vars <- lapply(unique(raw_data$metadata$tissue), function(tissue) {
   remove_vars <- bio_vars[bio_vars$tissue == tissue, ] |>
-    summarize(across(everything(), ~ all(is.na(.x)) || length(unique(.x)) == 1))
+    summarize(
+      across(
+        -specimenID,
+        ~ all(is.na(.x)) || length(unique(.x)) == 1 || length(unique(.x)) == length(.x)
+      )
+    )
 
   remove_vars <- names(remove_vars)[remove_vars == TRUE]
 
   bio_vars[bio_vars$tissue == tissue, ] |>
     select(!all_of(remove_vars)) |>
-    mutate(across(everything(), factor))
+    mutate(across(-specimenID, factor))
 })
 
 names(bio_vars) <- unique(raw_data$metadata$tissue)
 
 
-tissue = "superior temporal gyrus"
-data_sub = cqn_data[[tissue]]
-data_sub = data_sub$y + data_sub$offset
+for (tissue in unique(raw_data$metadata$tissue)) {
+  data_sub <- cqn_data[[tissue]]
+  data_sub <- data_sub$y + data_sub$offset
 
-meta_sub = merge(bio_vars[[tissue]], tech_vars[[tissue]])
-data_sub = data_sub[, meta_sub$specimenID]
+  meta_sub <- merge(bio_vars[[tissue]], tech_vars[[tissue]])
+  data_sub <- data_sub[, meta_sub$specimenID]
 
-variables <- setdiff(colnames(meta_sub), c("individualID", "specimenID", "tissue"))
-baseFormula <- "~ ADoutcome"
+  stopifnot(all(colnames(data_sub) == meta_sub$specimenID))
 
-mixed_vars <- intersect(variables,
-                        c("cohort", "sequencingBatch",
-                          "sampleExchangeOrigin", "dataContributionGroup"))
-fixed_vars <- setdiff(variables, mixed_vars)
+  variables <- setdiff(colnames(meta_sub), c("specimenID", "tissue", "individualID")) # TODO individualID removal for Rush only
+  baseFormula <- "~ ADoutcome + sex + race + isHispanic"
 
-mixed_vars <- paste0("(1|", mixed_vars, ")")
+  mixed_vars <- intersect(variables,
+                          c("individualID", "cohort",
+                            "sequencingBatch", "dataContributionGroup"))
+  fixed_vars <- setdiff(variables, mixed_vars)
 
-meta_sub <- meta_sub |>
-  mutate(across(where(is.numeric), scale))
+  if (all(c("cohort", "dataContributionGroup") %in% mixed_vars)) {
+    mixed_vars <- c(setdiff(mixed_vars, c("cohort", "dataContributionGroup")),
+                    "dataContributionGroup/cohort")
+  }
 
-results <- mvIC::mvForwardStepwise(data_sub,
-                                   baseFormula = baseFormula,
-                                   data = meta_sub,
-                                   variables = c(fixed_vars, mixed_vars))
+  mixed_vars <- paste0("(1|", mixed_vars, ")")
+
+  meta_sub <- meta_sub |>
+    mutate(across(where(is.numeric), scale))
+
+  results <- mvIC::mvForwardStepwise(data_sub,
+                                     baseFormula = baseFormula,
+                                     data = meta_sub,
+                                     variables = c(fixed_vars, mixed_vars))
+
+  saveRDS(results, file = file.path("data", "regression", paste0("Rush_", tissue, "_formulas.rds")))
+}
+
+# TODO/notes:
+# * consider libraryBatch or rnaBatch instead of sequencingBatch? a lot of the
+#     sample swaps have NA for these values
+# * caudate nucleus only has 2 sequencing batches -- doesn't need to be a mixed effect?
+# * DLPFC -- 3 sequencing batches, same question
+# * STG -- 2 sequencing batches, same question
+# * Each dataContributionGroup is a linear combination of one or more cohorts.
+#     Not sure if both variables are needed or just cohort. Could also be
+#     specified as (1 | dataContributionGroup / cohort)
+# * Need to set sampleExchangeOrigin to "not applicable" when it equals the
+#     dataContributionSite (or MSSM/Columbia for NYGC)
+# * Cohort and sampleExchangeOrigin are 1:1 so I don't think we need sampleExchangeOrigin
+# * The samples with NA DV200 or RIN are mostly sample exchanges
+# * Mayo and Emory are missing a large portion of PMI values (~ 42%)
+
+
+
+

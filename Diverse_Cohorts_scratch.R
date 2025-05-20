@@ -3,7 +3,9 @@ library(matrixStats)
 
 source("helper_functions.R")
 
-metadata <- download_metadata()
+configs <- config::get(file = "config.yml")
+
+metadata <- download_metadata(configs)
 
 dataGen_fill <- viridis::turbo(3, begin = 0.25, end = 0.7)
 # Same as above but minus #20202000 to blue and orange and minus #40404000 to

@@ -4,7 +4,7 @@ source("helper_functions.R")
 
 gc_info <- read.csv(file.path("data", "gene_metadata.csv"))
 
-data <- readRDS(file.path("data", "QC", "Mayo_qc.rds"))
+data <- readRDS(file.path("data", "QC", "Rush_qc.rds"))
 data <- DGEList(round(data$counts), samples = data$metadata)
 
 # For the purposes of CQN, any diagnosis of "missing or unknown" is categorized
@@ -25,6 +25,9 @@ rownames(gc_info) <- gc_info$ensembl_gene_id
 
 cqn_data <- lapply(data_tissue, function(dt) {
   gc_info_sub <- gc_info[rownames(dt$counts), ]
+
+  stopifnot(all(rownames(dt$counts) == gc_info_sub$ensembl_gene_id))
+
   output <- cqn(dt$counts,
                 x = gc_info_sub$percent_gc_content,
                 lengths = gc_info_sub$gene_length,
@@ -32,4 +35,4 @@ cqn_data <- lapply(data_tissue, function(dt) {
   output[c("y", "offset", "glm.offset")]
 })
 
-saveRDS(cqn_data, file.path("data", "cqn", "Mayo_cqn.rds"))
+saveRDS(cqn_data, file.path("data", "cqn", "Rush_cqn.rds"))
