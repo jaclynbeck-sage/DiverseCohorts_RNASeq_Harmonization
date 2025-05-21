@@ -21,6 +21,9 @@ fastqc_data <- lapply(fastqc_data, function(df) {
 
 multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
 
+
+# Validate ---------------------------------------------------------------------
+
 orig_size <- ncol(counts)
 
 counts_log <- simple_lognorm(counts)
@@ -28,11 +31,11 @@ counts_log <- simple_lognorm(counts)
 metadata <- validate_fastqc(metadata, fastqc_data, configs$thresholds)
 metadata <- validate_multiqc(metadata, multiqc_stats, configs$thresholds)
 metadata <- validate_sex(metadata, counts_log, configs$thresholds)
-metadata <- outlier_pca(metadata, counts_log, gene_info)
+metadata <- validate_pca(metadata, counts_log, gene_info)
 metadata <- validate_DV200(metadata, configs$thresholds)
 
 
-# Save samples that passed QC
+# Save samples that passed QC --------------------------------------------------
 
 metadata$valid <- Reduce("&", metadata[, grepl("_valid", colnames(metadata))])
 metadata$warn <- Reduce("+", metadata[, grepl("_warn", colnames(metadata))])

@@ -102,16 +102,18 @@ names(bio_vars) <- unique(raw_data$metadata$tissue)
 
 
 for (tissue in unique(raw_data$metadata$tissue)) {
-  data_sub <- cqn_data[[tissue]]
-  data_sub <- data_sub$y + data_sub$offset
+  #data_sub <- cqn_data[[tissue]]
+  #data_sub <- data_sub$y + data_sub$offset
+  data_sub <- simple_lognorm(raw_data$counts)
 
   meta_sub <- merge(bio_vars[[tissue]], tech_vars[[tissue]])
   data_sub <- data_sub[, meta_sub$specimenID]
 
   stopifnot(all(colnames(data_sub) == meta_sub$specimenID))
 
+  # TODO remove variables that are in base formula
   variables <- setdiff(colnames(meta_sub), c("specimenID", "tissue", "individualID")) # TODO individualID removal for Rush only
-  baseFormula <- "~ ADoutcome + sex + race + isHispanic"
+  baseFormula <- "~1" #"~ ADoutcome + sex + race + isHispanic"
 
   mixed_vars <- intersect(variables,
                           c("individualID", "cohort",
@@ -133,7 +135,7 @@ for (tissue in unique(raw_data$metadata$tissue)) {
                                      data = meta_sub,
                                      variables = c(fixed_vars, mixed_vars))
 
-  saveRDS(results, file = file.path("data", "regression", paste0("Rush_", tissue, "_formulas.rds")))
+  saveRDS(results, file = file.path("data", "regression", paste0("Rush_", tissue, "_formulas_no_cqn.rds")))
 }
 
 # TODO/notes:

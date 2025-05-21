@@ -35,6 +35,9 @@ multiqc_stats <- merge(multiqc_stats, remapping,
 
 multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
 
+
+# Validate ---------------------------------------------------------------------
+
 orig_size <- ncol(counts)
 
 counts_log <- simple_lognorm(counts)
@@ -42,11 +45,11 @@ counts_log <- simple_lognorm(counts)
 metadata <- validate_fastqc(metadata, fastqc_data, configs$thresholds)
 metadata <- validate_multiqc(metadata, multiqc_stats, configs$thresholds)
 metadata <- validate_sex(metadata, counts_log, configs$thresholds)
-metadata <- outlier_pca(metadata, counts_log, gene_info)
+metadata <- validate_pca(metadata, counts_log, gene_info)
 metadata <- validate_DV200(metadata, configs$thresholds)
 
 
-# Save samples that passed QC
+# Save samples that passed QC --------------------------------------------------
 
 metadata$valid <- Reduce("&", metadata[, grepl("_valid", colnames(metadata))])
 metadata$warn <- Reduce("+", metadata[, grepl("_warn", colnames(metadata))])
@@ -60,7 +63,10 @@ counts <- counts[, metadata$specimenID]
 
 message(str_glue("{ncol(counts)} of {orig_size} samples passed QC."))
 
-data_final <- DGEList(counts, samples = metadata, remove.zeros = TRUE)
-data_final <- normLibSizes(data_final, method = "TMM")
+# Remove genes that are all 0's
+zeros <- rowSums(counts) == 0
+
+data_final <- list("metadata" = metadata, "counts" = counts[!zeros, ],
+                   "multiqc_stats" = multiqc_stats)
 
 saveRDS(data_final, file.path("data", "QC", "Columbia_qc.rds"))

@@ -13,7 +13,7 @@ default:
     reads_mapped: 70
     reads_duplicated: 80
     sex: 2
-    DV200: 60
+    DV200: 50
     RIN: 2.5
 
   # Dataset-specific variables
