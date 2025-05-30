@@ -54,25 +54,34 @@ download_metadata <- function(configs) {
       # Mayo sequenced "Mayo", "Emory", and sample swaps in the same batches
       # Rush did the same with "Rush" and sample swaps
       # NYGC sequenced "Columbia" separately from "MSSM" -- TODO sample swaps?
-      sequencingBatch = case_match(dataGenerationSite,
-        c("Mayo", "Rush") ~ paste(dataGenerationSite, sequencingBatch, sep = "_"),
-        "NYGC" ~ paste(dataGenerationSite, dataContributionGroup, sequencingBatch, sep = "_")
+      # TODO this is wrong for MSSM, sample swaps were prepped at NYGC instead of at the originating site
+      across(c(rnaBatch, libraryBatch, sequencingBatch),
+        ~ case_match(dataGenerationSite,
+          c("Mayo", "Rush") ~ ifelse(is.na(.x), .x, paste(dataGenerationSite, .x, sep = "_")),
+          "NYGC" ~ ifelse(is.na(.x), .x, paste(dataGenerationSite, dataContributionGroup, .x, sep = "_"))
+        )
       )
     ) |>
     select(-ageDeathNumeric)
 
-  # Impute missing RIN and DV200, most of which are from sample swaps
-  metadata <- impute_missing_numeric(metadata, "DV200")
-  metadata <- impute_missing_numeric(metadata, "RIN")
+  # Fill missing batch information where it was left out for sample swaps
+  metadata <- fill_missing_categorical(metadata, "rnaBatch")
+  metadata <- fill_missing_categorical(metadata, "libraryBatch")
 
+  # Fill missing RIN and DV200, most of which are from sample swaps
+  metadata <- fill_missing_numeric(metadata, "DV200")
+  metadata <- fill_missing_numeric(metadata, "RIN")
 }
 
-impute_missing_numeric <- function(metadata, col_name) {
+fill_missing_numeric <- function(metadata, col_name) {
   missing <- subset(metadata, is.na(metadata[, col_name]))
 
   for (row_ind in 1:nrow(missing)) {
     m_rows <- subset(metadata, individualID == missing$individualID[row_ind] &
                        tissue == missing$tissue[row_ind])
+
+    # Note: If this sample is not from a sample swap, the value will likely
+    # still be NA
     missing[row_ind, col_name] <- mean(m_rows[, col_name], na.rm = TRUE)
   }
 
@@ -80,14 +89,22 @@ impute_missing_numeric <- function(metadata, col_name) {
   return(metadata)
 }
 
-# Not used. It wasn't worth trying to guess RNA and library batches for sample swaps
-impute_missing_categorical <- function(metadata, col_name) {
+
+fill_missing_categorical <- function(metadata, col_name) {
   missing <- subset(metadata, is.na(metadata[, col_name]))
 
   for (row_ind in 1:nrow(missing)) {
     m_rows <- subset(metadata, individualID == missing$individualID[row_ind] &
                        tissue == missing$tissue[row_ind])
 
+    # This is highly likely to be a sample swap that was not prepped at the
+    # data generation site. Find the originating site's batch information
+    m_rows <- subset(m_rows, (dataGenerationSite == dataContributionGroup) |
+                       (dataGenerationSite == "Mayo" & dataContributionGroup == "Emory") |
+                       (dataGenerationSite == "NYGC" & dataContributionGroup %in% c("Columbia", "MSSM")))
+
+    # Note: Sample swaps that originated from MSSM do not currently have batch
+    # information so this will remain NA for those samples
     if (length(na.omit(m_rows[, col_name])) == 1) {
       missing[row_ind, col_name] <- na.omit(m_rows[, col_name])
     }
