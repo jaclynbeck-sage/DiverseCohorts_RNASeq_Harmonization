@@ -27,30 +27,34 @@ print(plts)
 
 # Filter out highly correlated technical variables -----------------------------
 
-tech_vars <- raw_data$metadata |>
+numerical_vars <- raw_data$metadata |>
   select(specimenID, tissue, RIN, DV200, PMI) |>
   merge(raw_data$multiqc_stats) |>
   mutate(across(c(-specimenID, -tissue), as.numeric))
 
 # Remove any variables where the values are the same for every sample
-vars_remove <- tech_vars |>
+vars_remove <- numerical_vars |>
   summarize(across(where(is.numeric), ~ length(unique(.x)) == 1))
 
 vars_remove <- c(colnames(vars_remove)[vars_remove == TRUE],
                  # Not really technical variables
                  "samtools_percent_mapped_X", "samtools_percent_mapped_Y",
                  # redundant with picard_PERCENT_DUPLICATION
-                 "samtools_reads_duplicated_percent")
+                 "samtools_reads_duplicated_percent",
+                 # Not enough variation
+                 "samtools_average_quality",
+                 # Not as useful for alignments to genome instead of transcriptome
+                 "samtools_insert_size_average")
 
-tech_vars <- select(tech_vars, -all_of(vars_remove))
+numerical_vars <- select(numerical_vars, -all_of(vars_remove))
 
-tech_vars <- lapply(unique(raw_data$metadata$tissue), function(tissue) {
-  tech_mat <- tech_vars[tech_vars$tissue == tissue, ] |>
+numerical_vars <- lapply(unique(raw_data$metadata$tissue), function(tissue) {
+  tech_mat <- numerical_vars[numerical_vars$tissue == tissue, ] |>
     select(-specimenID, -tissue) |>
     as.matrix()
 
   # Number of NA entries in each column
-  na_vars <- tech_vars[tech_vars$tissue == tissue, ] |>
+  na_vars <- numerical_vars[numerical_vars$tissue == tissue, ] |>
     summarize(across(everything(), ~sum(is.na(.x))))
 
   cor_mat <- cor(tech_mat, use = "na.or.complete")
@@ -58,13 +62,13 @@ tech_vars <- lapply(unique(raw_data$metadata$tissue), function(tissue) {
   vars_remove <- remove_correlated_variables(cor_mat, na_vars)
   print(paste0(tissue, ": removing ", paste(vars_remove, collapse = ", ")))
 
-  tech_vars[tech_vars$tissue == tissue, ] |>
+  numerical_vars[numerical_vars$tissue == tissue, ] |>
     select(!any_of(vars_remove))
 })
 
-names(tech_vars) <- unique(raw_data$metadata$tissue)
+names(numerical_vars) <- unique(raw_data$metadata$tissue)
 
-bio_vars <- raw_data$metadata |>
+categorical_vars <- raw_data$metadata |>
   select(
     specimenID, tissue, rnaBatch, libraryBatch, sequencingBatch, isSampleExchange, cohort
     # sampleExchangeOrigin has 1:1 overlap with cohort so it is excluded
@@ -72,11 +76,10 @@ bio_vars <- raw_data$metadata |>
     # with rnaBatch so it is excluded too.
   )
 
-# TODO this should be renamed to categorical vars and tech_vars should be numerical vars
 # Split by tissue, remove columns that are all NA, all have the same value, or
 # have the same number of unique values as there are samples
-bio_vars <- lapply(unique(raw_data$metadata$tissue), function(tissue) {
-  remove_vars <- bio_vars[bio_vars$tissue == tissue, ] |>
+categorical_vars <- lapply(unique(raw_data$metadata$tissue), function(tissue) {
+  remove_vars <- categorical_vars[categorical_vars$tissue == tissue, ] |>
     summarize(
       across(
         -specimenID,
@@ -86,12 +89,12 @@ bio_vars <- lapply(unique(raw_data$metadata$tissue), function(tissue) {
 
   remove_vars <- names(remove_vars)[remove_vars == TRUE]
 
-  bio_vars[bio_vars$tissue == tissue, ] |>
+  categorical_vars[categorical_vars$tissue == tissue, ] |>
     select(!all_of(remove_vars)) |>
     mutate(across(-specimenID, factor))
 })
 
-names(bio_vars) <- unique(raw_data$metadata$tissue)
+names(categorical_vars) <- unique(raw_data$metadata$tissue)
 
 
 for (tissue in unique(raw_data$metadata$tissue)) {
@@ -101,19 +104,19 @@ for (tissue in unique(raw_data$metadata$tissue)) {
   data_sub <- cqn_data[[tissue]]
   data_sub <- data_sub$y + data_sub$offset
 
-  meta_sub <- merge(bio_vars[[tissue]], tech_vars[[tissue]])
+  meta_sub <- merge(categorical_vars[[tissue]], numerical_vars[[tissue]])
   data_sub <- data_sub[, meta_sub$specimenID]
 
   stopifnot(all(colnames(data_sub) == meta_sub$specimenID))
 
-  variables <- setdiff(colnames(meta_sub), c("specimenID", "tissue", "individualID")) # TODO individualID removal for Rush only
-  baseFormula <- "~1" #"~ ADoutcome + sex + race + isHispanic"
+  variables <- setdiff(colnames(meta_sub), c("specimenID", "tissue"))
+  baseFormula <- "~1"
 
   mixed_vars <- intersect(variables,
-                          c("individualID", "cohort",
-                            #"sequencingBatch", "dataContributionGroup",
+                          c("cohort",
+                            #"sequencingBatch", # For Rush there are only 2-3 levels of sequencing batch
                             "rnaBatch", "libraryBatch"))
-  fixed_vars <- setdiff(variables, mixed_vars)
+  fixed_vars <- variables #setdiff(variables, mixed_vars)
 
   # All cohorts only belong to one dataContributionGroup each
   if (all(c("cohort", "dataContributionGroup") %in% variables)) {
@@ -147,6 +150,7 @@ for (tissue in unique(raw_data$metadata$tissue)) {
                                      baseFormula = baseFormula,
                                      data = meta_sub,
                                      variables = c(fixed_vars, mixed_vars))
+  print(results$formula)
 
   saveRDS(results, file = file.path("data", "regression", paste0("Rush_", tissue, "_formulas.rds")))
 
@@ -193,7 +197,7 @@ for (tissue in unique(raw_data$metadata$tissue)) {
             quote = FALSE)
 
   # Write original (un-scaled) metadata values
-  meta_sub_orig <- merge(bio_vars[[tissue]], tech_vars[[tissue]])
+  meta_sub_orig <- merge(categorical_vars[[tissue]], numerical_vars[[tissue]])
   write.csv(meta_sub_orig[, c("specimenID", "tissue", model_vars)],
             file.path("data", "regression", str_glue("Rush_{tissue}_covariates.csv")),
             row.names = FALSE, quote = FALSE)
