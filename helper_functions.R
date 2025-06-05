@@ -1,3 +1,4 @@
+# ---- include-libraries ----
 library(synapser)
 library(ggplot2)
 library(viridis)
@@ -6,6 +7,8 @@ library(matrixStats)
 library(dplyr)
 library(stringr)
 library(sageRNAUtils)
+
+# ---- download-data-functions ----
 
 download_metadata <- function(configs) {
   synLogin()
@@ -128,6 +131,8 @@ download_rsem <- function(syn_id) {
 }
 
 
+# ---- download-qc ----
+
 download_fastqc <- function(dataset_config, load_saved_stats = FALSE) {
   fastq_dir <- file.path("downloads", paste0(dataset_config$name, "_fastqc"))
   fq_stats_file <- file.path("data", "QC",
@@ -224,6 +229,8 @@ remap_columbia_fastqc <- function(fastqc_files) {
 }
 
 
+# ---- validate-fastqc-function ----
+
 validate_fastqc <- function(metadata, fastqc_data, thresholds) {
   # TODO jitter the outlier points
   plt1 <- ggplot(fastqc_data$basic_statistics,
@@ -270,15 +277,11 @@ validate_fastqc <- function(metadata, fastqc_data, thresholds) {
 }
 
 
+# ---- validate-multiqc-function ----
+
 # In the absence of RSeQC data, we only check percentage of reads mapped and
 # percentage of duplicated reads for now.
 validate_multiqc <- function(metadata, multiqc_stats, thresholds) {
-  corr_mat <- multiqc_stats |>
-    dplyr::select(where(is.numeric), -samtools_reads_QC_failed_percent) |>
-    cor()
-
-  corrplot::corrplot(corr_mat, tl.cex = 0.7)
-
   reads_mapped_fail <- multiqc_stats |>
     subset(samtools_reads_mapped_percent < thresholds$reads_mapped) |>
     pull(specimenID)
@@ -345,6 +348,8 @@ validate_multiqc <- function(metadata, multiqc_stats, thresholds) {
 }
 
 
+# ---- validate-sex-function ----
+
 validate_sex <- function(metadata, data, thresholds) {
   mismatches <- find_sex_mismatches(metadata, data,
                                     y_expr_threshold = thresholds$sex)
@@ -358,6 +363,8 @@ validate_sex <- function(metadata, data, thresholds) {
   metadata
 }
 
+
+# ---- validate-pca-function ----
 
 validate_pca <- function(metadata, data, gene_info, n_sds = 4) {
   # Do PCA outlier detection on a per-tissue or per-group basis.
@@ -394,6 +401,8 @@ validate_pca <- function(metadata, data, gene_info, n_sds = 4) {
 }
 
 
+# ---- validate-dv200-function ----
+
 validate_DV200 <- function(metadata, thresholds) {
   plt1 <- ggplot(metadata, aes(x = tissue, y = RIN, fill = tissue)) +
     geom_boxplot(outliers = FALSE) +
@@ -427,6 +436,7 @@ validate_DV200 <- function(metadata, thresholds) {
 }
 
 
+# ---- download-multiqc-function ----
 # TODO move to library?
 download_multiqc_json <- function(syn_id) {
   synLogin()
@@ -536,6 +546,7 @@ download_multiqc_json <- function(syn_id) {
 }
 
 
+# ---- remove-correlated-vars-function ----
 # TODO move to library
 remove_correlated_variables <- function(cor_mat, na_vars, R2_threshold = 0.5) {
   r2 <- cor_mat^2

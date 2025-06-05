@@ -1,0 +1,144 @@
+---
+title: "Diverse Cohorts RNA-Seq QC (Rush)"
+author: "Jaclyn Beck"
+format: html
+editor: visual
+code-fold: true
+---
+
+```{r}
+#| cache: false
+#| label: read-chunk
+#| include: false
+
+knitr::read_chunk("qc_functions.R")
+
+```
+
+```{r}
+#| label: include-libraries
+#| output: false
+```
+
+```{r}
+#| label: setup
+#| output: false
+
+dataset <- "Rush"
+configs <- config::get(file = "config.yml")
+```
+
+# Load files
+
+```{r}
+#| label: download-metadata
+#| output: false
+```
+
+```{r}
+#| label: download-counts
+#| output: false
+```
+
+```{r}
+#| label: load-qc-stats
+```
+
+## Remove duplicate Rush samples from QC files
+
+```{r}
+#| label: remove-duplicates
+
+to_remove <- lapply(configs$Rush$remove_samples_fastqc, function(id) {
+  grep(id, fastqc_data$basic_statistics$sample, value = TRUE)
+})
+
+fastqc_data <- lapply(fastqc_data, function(df) {
+  df <- subset(df, !(sample %in% unlist(to_remove)))
+  merge(dplyr::select(metadata, specimenID, tissue), df)
+})
+
+multiqc_stats <- subset(multiqc_stats, !(specimenID %in% configs$Rush$remove_samples_fastqc)) |>
+  mutate(specimenID = str_replace(specimenID, "_S[0-9]+", ""))
+multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
+
+```
+
+# Validation
+
+## FastQC
+
+Examine Phred score and average base content at each position of a read.
+
+Samples fail QC if they have a Phred score \< `{r} configs$thresholds$phred`.
+
+Samples get a QC "warning" if their base content is above `Q3 + 1.5 * IQR` for any base or if their Phred score is below `Q1 - 1.5 * IQR`.
+
+Samples with more than 2 warnings across all QC metrics fail QC.
+
+```{r}
+#| label: validate-fastqc
+```
+
+```{r}
+#| label: fastqc-status
+
+# TODO print fastqc fail/warn
+
+```
+
+## MultiQC
+
+```{r}
+#| label: validate-multiqc
+```
+
+```{r}
+#| label: multiqc_status
+
+# TODO print multiqc fail/warn
+
+```
+
+## Inferred sex
+
+```{r}
+#| label: validate-sex
+```
+
+```{r}
+#| label: sex_status
+
+# TODO print sex assignment fail
+```
+
+## PCA outliers
+
+```{r}
+#| label: validate-pca
+```
+
+```{r}
+#| label: pca-status
+
+# TODO print pca fail status
+```
+
+## DV200
+
+```{r}
+#| label: validate-dv200
+#| warning: false
+```
+
+```{r}
+#| label: dv200-status
+
+# TODO print DV200 fail status
+```
+
+# Save samples that passed QC
+
+```{r}
+#| label: save-samples
+```
