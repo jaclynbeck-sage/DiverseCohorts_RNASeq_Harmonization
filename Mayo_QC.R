@@ -26,7 +26,7 @@ multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stat
 
 orig_size <- ncol(counts)
 
-counts_log <- simple_lognorm(counts)
+counts_log <- simple_log2norm(counts)
 
 metadata <- validate_fastqc(metadata, fastqc_data, configs$thresholds)
 metadata <- validate_multiqc(metadata, multiqc_stats, configs$thresholds)

@@ -104,7 +104,7 @@ names(bio_vars) <- unique(raw_data$metadata$tissue)
 for (tissue in unique(raw_data$metadata$tissue)) {
   #data_sub <- cqn_data[[tissue]]
   #data_sub <- data_sub$y + data_sub$offset
-  data_sub <- simple_lognorm(raw_data$counts)
+  data_sub <- simple_log2norm(raw_data$counts)
 
   meta_sub <- merge(bio_vars[[tissue]], tech_vars[[tissue]])
   data_sub <- data_sub[, meta_sub$specimenID]

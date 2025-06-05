@@ -5,14 +5,14 @@ configs <- config::get(file = "config.yml")
 metadata <- download_metadata(configs)
 counts <- download_rsem(configs$Rush$count_matrix_synid)
 
-fastqc_data <- readRDS(file.path("data", "QC", "Rush_fastqc_stats.rds"))
-multiqc_stats <- readRDS(file.path("data", "QC", "Rush_multiqc_stats.rds"))
-gene_info <- read.csv(file.path("data", "gene_metadata.csv"))
-
 metadata <- subset(metadata, specimenID %in% colnames(counts))
 counts <- counts[, metadata$specimenID]
 
 stopifnot(length(unique(metadata$specimenID)) == nrow(metadata))
+
+fastqc_data <- readRDS(file.path("data", "QC", "Rush_fastqc_stats.rds"))
+multiqc_stats <- readRDS(file.path("data", "QC", "Rush_multiqc_stats.rds"))
+gene_info <- read.csv(file.path("data", "gene_metadata.csv"))
 
 # Remove the duplicate samples from Rush
 to_remove <- lapply(configs$Rush$remove_samples_fastqc, function(id) {
@@ -33,7 +33,7 @@ multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stat
 
 orig_size <- ncol(counts)
 
-counts_log <- simple_lognorm(counts)
+counts_log <- simple_log2norm(counts)
 
 metadata <- validate_fastqc(metadata, fastqc_data, configs$thresholds)
 metadata <- validate_multiqc(metadata, multiqc_stats, configs$thresholds)
