@@ -1,8 +1,11 @@
 ---
 title: "Diverse Cohorts RNA-Seq QC (Rush)"
 author: "Jaclyn Beck"
-format: html
-toc: true
+format:
+  html:
+    df-print: kable
+    toc: true
+    toc-depth: 2
 editor: visual
 code-fold: true
 ---
@@ -179,4 +182,10 @@ Samples were marked as QC failures if:
 
 ```{r}
 #| label: print-final-qc-results
+```
+
+#### Samples that will be removed
+
+```{r}
+#| label: print-qc-failures
 ```

@@ -491,8 +491,9 @@ metadata$warn <- Reduce("+", metadata[, grepl("_warn", colnames(metadata))])
 
 metadata$valid <- metadata$valid & metadata$warn < 2
 
-passes <- table(metadata$tissue, metadata$valid)
-colnames(passes) <- c("Fail", "Pass")
+n_passes <- table(metadata$tissue, metadata$valid)
+colnames(n_passes) <- c("Fail", "Pass")
+failures <- subset(metadata, valid == FALSE)
 
 metadata <- subset(metadata, valid == TRUE)
 counts <- counts[, metadata$specimenID]
@@ -509,4 +510,13 @@ saveRDS(data_final, file.path("data", "QC",
 
 # ---- print-final-qc-results ----
 
-passes
+n_passes |>
+  as.data.frame() |>
+  tidyr::pivot_wider(names_from = Var2, values_from = Freq) |>
+  dplyr::rename(Tissue = Var1)
+
+# ---- print-qc-failures ----
+
+failures |>
+  group_by(tissue) |>
+  summarize(`Specimen IDs` = paste(specimenID, collapse = ", "))
