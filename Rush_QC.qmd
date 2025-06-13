@@ -2,9 +2,14 @@
 title: "Diverse Cohorts RNA-Seq QC (Rush)"
 author: "Jaclyn Beck"
 format: html
+toc: true
 editor: visual
 code-fold: true
 ---
+
+# Setup
+
+<details>
 
 ```{r}
 #| cache: false
@@ -28,20 +33,26 @@ dataset <- "Rush"
 configs <- config::get(file = "config.yml")
 ```
 
-# Load files
+## Load files
+
+Metadata (individual, biospecimen, assay files)
 
 ```{r}
 #| label: download-metadata
 #| output: false
 ```
 
+Counts file
+
 ```{r}
 #| label: download-counts
 #| output: false
 ```
 
+FastQC and MultiQC stats
+
 ```{r}
-#| label: load-qc-stats
+#| label: download-qc-stats
 ```
 
 ## Remove duplicate Rush samples from QC files
@@ -54,8 +65,7 @@ to_remove <- lapply(configs$Rush$remove_samples_fastqc, function(id) {
 })
 
 fastqc_data <- lapply(fastqc_data, function(df) {
-  df <- subset(df, !(sample %in% unlist(to_remove)))
-  merge(dplyr::select(metadata, specimenID, tissue), df)
+  subset(df, !(sample %in% unlist(to_remove)))
 })
 
 multiqc_stats <- subset(multiqc_stats, !(specimenID %in% configs$Rush$remove_samples_fastqc)) |>
@@ -63,6 +73,8 @@ multiqc_stats <- subset(multiqc_stats, !(specimenID %in% configs$Rush$remove_sam
 multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
 
 ```
+
+</details>
 
 # Validation
 
@@ -80,65 +92,91 @@ Samples with more than 2 warnings across all QC metrics fail QC.
 #| label: validate-fastqc
 ```
 
+**FastQC failures / warnings:** `{r} n_fqc_warn_fail` sample(s)
+
 ```{r}
-#| label: fastqc-status
-
-# TODO print fastqc fail/warn
-
+#| label: print-fastqc-results
 ```
 
 ## MultiQC
+
+Examine percentage of reads mapped and percentage of reads duplicated.
+
+Samples fail QC if they have \< `{r} thresholds$reads_mapped`% reads mapped or \> `{r} thresholds$reads_duplicated`% duplicated reads.
+
+Samples get a QC warning if they have less than `Q1 - 1.5 * IQR` mapped reads or more than `Q3 + 3 * IQR` duplicated reads.
 
 ```{r}
 #| label: validate-multiqc
 ```
 
+**MultiQC failures / warnings:** `{r} n_mqc_warn_fail` sample(s)
+
 ```{r}
-#| label: multiqc_status
-
-# TODO print multiqc fail/warn
-
+#| label: print-multiqc-results
 ```
 
 ## Inferred sex
+
+Examine average expression of key Y-chromosome genes to infer the sex of each sample. Genes used are **RPS4Y1, EIF1AY, DDX3Y,** and **KDM5D,** which were determined to be robust markers for sex in [Staedtler, et al (2013)](https://www.ncbi.nlm.nih.gov/pubmed/23829492).
+
+Samples whose inferred sex do not match their reported sex are marked as QC failures.
+
+Note: As seen in the graphs, there are 4 samples that are right in between the "female" and "male" clusters. Although they are slightly closer to the "female" cluster, they appear to be outliers of some sort from that group, so the threshold was set such that they would be marked as QC failures.
 
 ```{r}
 #| label: validate-sex
 ```
 
-```{r}
-#| label: sex_status
+**Reported sex vs inferred sex mismatches:** `{r} sum(!metadata$sex_valid)` sample(s)
 
-# TODO print sex assignment fail
+```{r}
+#| label: print-sex-mismatches
 ```
 
 ## PCA outliers
+
+Samples were split by tissue and sequencing batch, PCA was run on each group, and outliers were defined as samples falling outside 4 standard deviations of the data along PC1 and PC2.
 
 ```{r}
 #| label: validate-pca
 ```
 
-```{r}
-#| label: pca-status
+**PCA outliers:** `{r} sum(!metadata$pca_valid)` sample(s)
 
-# TODO print pca fail status
+```{r}
+#| label: print-pca-outliers
 ```
 
 ## DV200
+
+Samples were marked as QC failures if:
+
+-   Both DV200 and RIN are `NA`
+
+-   DV200 \< `{r} thresholds$DV200`
+
+    -   or RIN \< `{r} thresholds$RIN`, if DV200 is `NA` for that sample
 
 ```{r}
 #| label: validate-dv200
 #| warning: false
 ```
 
-```{r}
-#| label: dv200-status
+**Samples with low DV200:** `{r} sum(!metadata$DV200_valid)` sample(s)
 
-# TODO print DV200 fail status
+```{r}
+#| label: print-dv200-results
 ```
 
 # Save samples that passed QC
 
 ```{r}
 #| label: save-samples
+```
+
+**`{r} ncol(counts)`** of **`{r} orig_size`** samples passed QC. Results by tissue:
+
+```{r}
+#| label: print-final-qc-results
 ```

@@ -190,6 +190,15 @@ multiqc_stats <- readRDS(file.path("data", "QC",
                                    paste0(dataset, "_multiqc_stats.rds")))
 gene_info <- read.csv(file.path("data", "gene_metadata.csv"))
 
+fastqc_data <- lapply(fastqc_data, function(df) {
+  merge(dplyr::select(metadata, specimenID, tissue), df)
+})
+
+# Rush has to alter specimen IDs before merging, taken care of elsewhere
+if (dataset != "Rush") {
+  multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
+}
+
 
 # ---- validate-fastqc ----
 
@@ -236,6 +245,28 @@ metadata$base_content_warn <- metadata$specimenID %in% base_content_outliers
 metadata$phred_score_valid <- !(metadata$specimenID %in% phred_fail)
 metadata$phred_score_warn <- metadata$specimenID %in% phred_outliers
 
+n_fqc_warn_fail <- sum(metadata$base_content_warn | metadata$phred_score_warn |
+                         !metadata$phred_score_valid)
+
+
+# ---- print-fastqc-results ----
+
+meta_sub <- subset(metadata, base_content_warn | phred_score_warn | !phred_score_valid) |>
+  select(specimenID, tissue, base_content_warn, phred_score_warn, phred_score_valid) |>
+  mutate(
+    `Phred Score` = case_when(
+      !phred_score_valid ~ "FAIL",
+      phred_score_warn ~ "WARN",
+      .default = "."
+    ),
+    `Base Content` = ifelse(base_content_warn == TRUE, "WARN", ".")
+  ) |>
+  select(specimenID, tissue, `Phred Score`, `Base Content`) |>
+  dplyr::rename(Tissue = tissue, `Specimen ID` = specimenID) |>
+  arrange(Tissue, `Specimen ID`)
+
+meta_sub
+
 
 # ---- validate-multiqc ----
 
@@ -266,7 +297,7 @@ metadata$reads_mapped_warn <- metadata$specimenID %in% reads_mapped_outliers
 metadata$reads_duplicated_valid <- !(metadata$specimenID %in% reads_dupe_fail)
 metadata$reads_duplicated_warn <- metadata$specimenID %in% reads_dupe_outliers
 
-multiqc_stats <- multiqc_stats |>
+mqc_plot <- multiqc_stats |>
   mutate(
     mapped_status = case_when(
       specimenID %in% reads_mapped_fail ~ "Fail",
@@ -281,27 +312,57 @@ multiqc_stats <- multiqc_stats |>
   )
 
 stat_colors <- c("Pass" = "black", "Warn" = "orange", "Fail" = "red")
-plt1 <- ggplot(multiqc_stats,
+plt1 <- ggplot(mqc_plot,
                aes(x = tissue, y = samtools_reads_mapped_percent, fill = tissue)) +
   geom_boxplot(outliers = FALSE, width = 0.1) +
   geom_jitter(aes(color = mapped_status),
               width = 0.3,
-              size = ifelse(multiqc_stats$mapped_status == "Pass", 0.5, 1)) +
+              size = ifelse(mqc_plot$mapped_status == "Pass", 0.5, 1)) +
   theme_bw() +
   scale_color_manual(values = stat_colors) +
   ggtitle("Percentage of reads mapped")
 
-plt2 <- ggplot(multiqc_stats,
+plt2 <- ggplot(mqc_plot,
                aes(x = tissue, y = picard_PERCENT_DUPLICATION, fill = tissue)) +
   geom_boxplot(outliers = FALSE, width = 0.1) +
   geom_jitter(aes(color = duplicated_status),
               width = 0.3,
-              size = ifelse(multiqc_stats$duplicated_status == "Pass", 0.5, 1)) +
+              size = ifelse(mqc_plot$duplicated_status == "Pass", 0.5, 1)) +
   theme_bw() +
   scale_color_manual(values = stat_colors) +
   ggtitle("Percentage of reads duplicated")
 
 print(plt1 + plt2)
+
+n_mqc_warn_fail <- sum(metadata$reads_mapped_warn |
+                         metadata$reads_duplicated_warn |
+                         !metadata$reads_mapped_valid |
+                         !metadata$reads_duplicated_valid)
+
+
+# ---- print-multiqc-results ----
+
+meta_sub <- subset(metadata, reads_mapped_warn | reads_duplicated_warn |
+                     !reads_mapped_valid | !reads_duplicated_valid) |>
+  select(specimenID, tissue, reads_mapped_warn, reads_duplicated_warn,
+         reads_mapped_valid, reads_duplicated_valid) |>
+  mutate(
+    `Reads Mapped` = case_when(
+      !reads_mapped_valid ~ "FAIL",
+      reads_mapped_warn ~ "WARN",
+      .default = "."
+    ),
+    `Reads Duplicated` = case_when(
+      !reads_duplicated_valid ~ "FAIL",
+      reads_duplicated_warn ~ "WARN",
+      .default = "."
+    )
+  ) |>
+  select(specimenID, tissue, `Reads Mapped`, `Reads Duplicated`) |>
+  dplyr::rename(Tissue = tissue, `Specimen ID` = specimenID) |>
+  arrange(Tissue, `Specimen ID`)
+
+meta_sub
 
 
 # ---- validate-sex ----
@@ -318,6 +379,17 @@ plts <- sageRNAUtils::plot_sex_mismatch_results(
 print(plts[[1]] + plts[[2]])
 
 metadata$sex_valid <- !(metadata$specimenID %in% mismatches$mismatches)
+
+
+# ---- print-sex-mismatches ----
+
+meta_sub <- subset(metadata, !sex_valid) |>
+  select(specimenID, tissue) |>
+  dplyr::rename(`Specimen ID` = specimenID,
+                Tissue = tissue) |>
+  arrange(Tissue, `Specimen ID`)
+
+meta_sub
 
 
 # ---- validate-pca ----
@@ -357,6 +429,16 @@ print(Reduce("+", plts))
 metadata$pca_valid <- !(metadata$specimenID %in% results$outliers)
 
 
+# ---- print-pca-outliers ----
+
+meta_sub <- subset(metadata, !pca_valid) |>
+  select(specimenID, tissue) |>
+  dplyr::rename(`Specimen ID` = specimenID, Tissue = tissue) |>
+  arrange(Tissue, `Specimen ID`)
+
+meta_sub
+
+
 # ---- validate-dv200 ----
 
 thresholds <- configs$thresholds
@@ -384,12 +466,22 @@ print(plt1 + plt2)
 print(plt3 + plt4)
 
 metadata$DV200_valid <- case_when(
-  !is.na(metadata$DV200) ~ metadata$DV200 > thresholds$DV200,
+  !is.na(metadata$DV200) ~ metadata$DV200 >= thresholds$DV200,
   # If DV200 is NA, use RIN instead
-  is.na(metadata$DV200) & !is.na(metadata$RIN) ~ metadata$RIN > thresholds$RIN,
+  is.na(metadata$DV200) & !is.na(metadata$RIN) ~ metadata$RIN >= thresholds$RIN,
   # If both are NA, fail QC
   .default = FALSE
 )
+
+
+# ---- print-dv200-results ----
+
+meta_sub <- subset(metadata, !DV200_valid) |>
+  select(specimenID, tissue, DV200, RIN) |>
+  dplyr::rename(`Specimen ID` = specimenID, Tissue = tissue) |>
+  arrange(Tissue, DV200, RIN)
+
+meta_sub
 
 
 # ---- save-samples ----
@@ -399,13 +491,12 @@ metadata$warn <- Reduce("+", metadata[, grepl("_warn", colnames(metadata))])
 
 metadata$valid <- metadata$valid & metadata$warn < 2
 
-print(table(metadata$tissue, metadata$valid))
+passes <- table(metadata$tissue, metadata$valid)
+colnames(passes) <- c("Fail", "Pass")
 
 metadata <- subset(metadata, valid == TRUE)
 counts <- counts[, metadata$specimenID]
 multiqc_stats <- subset(multiqc_stats, specimenID %in% metadata$specimenID)
-
-message(str_glue("{ncol(counts)} of {orig_size} samples passed QC."))
 
 # Remove genes that are all 0's
 zeros <- rowSums(counts) == 0
@@ -415,3 +506,7 @@ data_final <- list("metadata" = metadata, "counts" = counts[!zeros, ],
 
 saveRDS(data_final, file.path("data", "QC",
                               paste0(dataset, "_qc.rds")))
+
+# ---- print-final-qc-results ----
+
+passes
