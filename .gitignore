@@ -47,3 +47,15 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+# HTML and other QMD output
+*.html
+*_QC_files/
+
+# CSV and PDF files
+*.csv
+*.pdf
+
+# Generated data
+data/
+downloads/

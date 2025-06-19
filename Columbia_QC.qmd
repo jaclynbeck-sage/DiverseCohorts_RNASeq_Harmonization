@@ -1,5 +1,5 @@
 ---
-title: "Diverse Cohorts RNA-Seq QC (Rush)"
+title: "Diverse Cohorts RNA-Seq QC (Columbia)"
 author: "Jaclyn Beck"
 format:
   html:
@@ -32,7 +32,7 @@ knitr::read_chunk("qc_functions.R")
 #| label: setup
 #| output: false
 
-dataset <- "Rush"
+dataset <- "Columbia"
 ```
 
 ## Load files
@@ -55,25 +55,6 @@ FastQC and MultiQC stats
 
 ```{r}
 #| label: download-qc-stats
-```
-
-## Remove duplicate Rush samples from QC files
-
-```{r}
-#| label: remove-duplicates
-
-to_remove <- lapply(configs$Rush$remove_samples_fastqc, function(id) {
-  grep(id, fastqc_data$basic_statistics$sample, value = TRUE)
-})
-
-fastqc_data <- lapply(fastqc_data, function(df) {
-  subset(df, !(sample %in% unlist(to_remove)))
-})
-
-multiqc_stats <- subset(multiqc_stats, !(specimenID %in% configs$Rush$remove_samples_fastqc)) |>
-  mutate(specimenID = str_replace(specimenID, "_S[0-9]+", ""))
-multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
-
 ```
 
 </details>
@@ -123,8 +104,6 @@ Samples get a QC warning if they have less than `Q1 - 1.5 * IQR` mapped reads or
 Examine average expression of key Y-chromosome genes to infer the sex of each sample. Genes used are **RPS4Y1, EIF1AY, DDX3Y,** and **KDM5D,** which were determined to be robust markers for sex in [Staedtler, et al (2013)](https://www.ncbi.nlm.nih.gov/pubmed/23829492).
 
 Samples whose inferred sex do not match their reported sex are marked as QC failures.
-
-Note: As seen in the graphs, there are 4 samples that are right in between the "female" and "male" clusters. Although they are slightly closer to the "female" cluster, they appear to be outliers of some sort from that group, so the threshold was set such that they would be marked as QC failures.
 
 ```{r}
 #| label: validate-sex
