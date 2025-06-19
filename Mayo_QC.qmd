@@ -1,0 +1,169 @@
+---
+title: "Diverse Cohorts RNA-Seq QC (Mayo / Emory)"
+author: "Jaclyn Beck"
+format:
+  html:
+    df-print: kable
+    toc: true
+    toc-depth: 2
+editor: visual
+code-fold: true
+---
+
+# Setup
+
+<details>
+
+```{r}
+#| cache: false
+#| label: read-chunk
+#| include: false
+
+knitr::read_chunk("qc_functions.R")
+
+```
+
+```{r}
+#| label: include-libraries
+#| output: false
+```
+
+```{r}
+#| label: setup
+#| output: false
+
+dataset <- "Mayo_Emory"
+```
+
+## Load files
+
+Metadata (individual, biospecimen, assay files)
+
+```{r}
+#| label: download-metadata
+#| output: false
+```
+
+Counts file
+
+```{r}
+#| label: download-counts
+#| output: false
+```
+
+FastQC and MultiQC stats
+
+```{r}
+#| label: download-qc-stats
+```
+
+</details>
+
+# Validation
+
+## FastQC
+
+Examine Phred score and average base content at each position of a read.
+
+Samples fail QC if they have a Phred score \< `{r} configs$thresholds$phred`.
+
+Samples get a QC "warning" if their base content is above `Q3 + 1.5 * IQR` for any base or if their Phred score is below `Q1 - 1.5 * IQR`.
+
+Samples with more than 2 warnings across all QC metrics fail QC.
+
+```{r}
+#| label: validate-fastqc
+```
+
+**FastQC failures / warnings:** `{r} n_fqc_warn_fail` sample(s)
+
+```{r}
+#| label: print-fastqc-results
+```
+
+## MultiQC
+
+Examine percentage of reads mapped and percentage of reads duplicated.
+
+Samples fail QC if they have \< `{r} thresholds$reads_mapped`% reads mapped or \> `{r} thresholds$reads_duplicated`% duplicated reads.
+
+Samples get a QC warning if they have less than `Q1 - 1.5 * IQR` mapped reads or more than `Q3 + 3 * IQR` duplicated reads.
+
+```{r}
+#| label: validate-multiqc
+```
+
+**MultiQC failures / warnings:** `{r} n_mqc_warn_fail` sample(s)
+
+```{r}
+#| label: print-multiqc-results
+```
+
+## Inferred sex
+
+Examine average expression of key Y-chromosome genes to infer the sex of each sample. Genes used are **RPS4Y1, EIF1AY, DDX3Y,** and **KDM5D,** which were determined to be robust markers for sex in [Staedtler, et al (2013)](https://www.ncbi.nlm.nih.gov/pubmed/23829492).
+
+Samples whose inferred sex do not match their reported sex are marked as QC failures.
+
+```{r}
+#| label: validate-sex
+```
+
+**Reported sex vs inferred sex mismatches:** `{r} sum(!metadata$sex_valid)` sample(s)
+
+```{r}
+#| label: print-sex-mismatches
+```
+
+## PCA outliers
+
+Samples were split by tissue and sequencing batch, PCA was run on each group, and outliers were defined as samples falling outside 4 standard deviations of the data along PC1 and PC2.
+
+```{r}
+#| label: validate-pca
+```
+
+**PCA outliers:** `{r} sum(!metadata$pca_valid)` sample(s)
+
+```{r}
+#| label: print-pca-outliers
+```
+
+## DV200
+
+Samples were marked as QC failures if:
+
+-   Both DV200 and RIN are `NA`
+
+-   DV200 \< `{r} thresholds$DV200`
+
+    -   or RIN \< `{r} thresholds$RIN`, if DV200 is `NA` for that sample
+
+```{r}
+#| label: validate-dv200
+#| warning: false
+```
+
+**Samples with low DV200:** `{r} sum(!metadata$DV200_valid)` sample(s)
+
+```{r}
+#| label: print-dv200-results
+```
+
+# Save samples that passed QC
+
+```{r}
+#| label: save-samples
+```
+
+**`{r} ncol(counts)`** of **`{r} orig_size`** samples passed QC. Results by tissue:
+
+```{r}
+#| label: print-final-qc-results
+```
+
+#### Samples that will be removed
+
+```{r}
+#| label: print-qc-failures
+```

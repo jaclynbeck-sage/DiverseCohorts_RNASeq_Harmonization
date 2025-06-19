@@ -21,11 +21,14 @@ download_fastqc <- function(dataset_config, load_saved_stats = FALSE) {
     synLogin()
 
     # Get a list of all fastq.zip files in the folder on Synapse and download them
-    children <- synGetChildren(dataset_config$fastqc_folder_synid)
+    children <- lapply(dataset_config$fastqc_folder_synids, function(syn_id) {
+      synGetChildren(syn_id)$asList()
+    }) |>
+      purrr::list_c()
 
     message("Downloading FastQC data from Synapse...")
 
-    files <- sapply(children$asList(), function(child) {
+    files <- sapply(children, function(child) {
       synGet(child$id, downloadLocation = fastq_dir)$path
     })
 
@@ -104,16 +107,35 @@ remap_columbia_fastqc <- function(fastqc_files) {
 
 
 # TODO move to library?
-download_multiqc_json <- function(syn_id) {
+download_multiqc_json <- function(syn_ids) {
   synLogin()
-  js_file <- synGet(syn_id, downloadLocation = "downloads")
+  js_files <- lapply(syn_ids, synGet, downloadLocation = "downloads")
 
-  js_txt <- readr::read_file(js_file$path)
-  js_txt <- str_replace_all(js_txt, "NaN", str_escape('"NaN"'))
-  js <- jsonlite::fromJSON(js_txt, simplifyVector = FALSE)
+  data <- lapply(js_files, function(js_file) {
+    js_txt <- readr::read_file(js_file$path)
+    js_txt <- str_replace_all(js_txt, "NaN", str_escape('"NaN"'))
+    js <- jsonlite::fromJSON(js_txt, simplifyVector = FALSE)
 
-  data <- lapply(js$report_saved_raw_data, function(item) {
-    do.call(rbind, item)
+    # Remove general stats -- it's a mix of sample-level and fastqc read-level
+    # data that doesn't merge together
+    keep <- !grepl("multiqc_general_stats", names(js$report_saved_raw_data))
+    js$report_saved_raw_data <- js$report_saved_raw_data[keep]
+
+    lapply(js$report_saved_raw_data, function(item) {
+      do.call(rbind, item)
+    })
+  })
+
+  # Check for duplicate samples
+  samps <- lapply(data, "[[", "multiqc_rsem") |>
+    lapply(rownames) |>
+    unlist()
+
+  stopifnot(all(table(samps) == 1))
+
+  # Merge the lists. Using sapply instead of lapply so it keeps the names
+  data <- sapply(names(data[[1]]), function(item_name) {
+    do.call(rbind, lapply(data, "[[", item_name))
   })
 
   # Helper function to convert items from "data", which are matrices, to

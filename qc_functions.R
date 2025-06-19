@@ -15,6 +15,8 @@ library(dplyr)
 library(stringr)
 library(sageRNAUtils)
 
+configs <- config::get(file = "config.yml")
+
 
 # ---- download-metadata ----
 
@@ -51,9 +53,9 @@ fill_missing_numeric <- function(metadata, col_name) {
 # Function to copy batch values from original sample to sample swaps. In the
 # assay metadata, specimens that were sample swaps have these fields set to NA,
 # but the originating specimen has this information. Here we find each
-# originating specimen and copy its rnaBatch, libraryBatch, or sequencingBatch
-# over to the corresponding sample swap specimen.
-fill_missing_categorical <- function(metadata, col_name) {
+# originating specimen and copy its rnaBatch over to the corresponding sample
+# swap specimen.
+fill_missing_rnaBatch <- function(metadata, col_name) {
   # All rows with NA values in the field
   missing <- subset(metadata, is.na(metadata[, col_name]))
 
@@ -72,11 +74,9 @@ fill_missing_categorical <- function(metadata, col_name) {
                        # NYGC processed Columbia and MSSM
                        (dataGenerationSite == "NYGC" & dataContributionGroup %in% c("Columbia", "MSSM")))
 
-    # If exactly 1 non-NA value was found from the originating site, use that value.
-    # Note: Sample swaps that originated from MSSM do not currently have batch
-    # information so this will remain NA for those samples
-    if (length(na.omit(m_rows[, col_name])) == 1) {
-      missing[row_ind, col_name] <- na.omit(m_rows[, col_name])
+    # If exactly 1 unique non-NA value was found from the originating site, use that value
+    if (length(unique(na.omit(m_rows[, col_name]))) == 1) {
+      missing[row_ind, col_name] <- unique(na.omit(m_rows[, col_name]))
     }
   }
 
@@ -122,11 +122,30 @@ metadata <- assay |>
     # Make PMI numeric
     PMI = suppressWarnings(as.numeric(PMI)),
 
+    # Fix missing batch information for MSSM sample swaps sequenced at MSSM.
+    # Batch information from NYGC.
+    rnaBatch = case_when(
+      is.na(rnaBatch) & dataGenerationSite == "NYGC" &
+        sampleExchangeOrigin == "MSSM" ~ "B01",
+      .default = rnaBatch
+    ),
+    libraryBatch = case_when(
+      is.na(libraryBatch) & dataGenerationSite == "NYGC" &
+        sampleExchangeOrigin == "MSSM" ~ "B04",
+      specimenID == "213917-2" ~ "B04",
+      is.na(libraryBatch) & dataGenerationSite == "NYGC" &
+        individualID %in% c("29600", "29631", "R1263350", "R3914030") ~ "B01",
+      is.na(libraryBatch) & dataGenerationSite == "NYGC" &
+        individualID %in% c("6434", "R7674931", "R9500594") ~ "B02",
+      is.na(libraryBatch) & dataGenerationSite == "NYGC" &
+        individualID %in% c("28871", "29691", "R5508487", "R9652199") ~ "B03",
+      .default = libraryBatch
+    ),
+
     # Batches need to be re-named to be unique to each data set --
     # * Mayo sequenced "Mayo", "Emory", and sample swaps in the same batches
     # * Rush did the same with "Rush" and sample swaps
-    # * NYGC sequenced "Columbia" separately from "MSSM" -- TODO sample swaps?
-    # TODO this is wrong for MSSM, sample swaps were prepped at NYGC instead of at the originating site
+    # * NYGC sequenced "Columbia" separately from "MSSM"
     across(c(rnaBatch, libraryBatch, sequencingBatch),
       ~case_match(
         dataGenerationSite,
@@ -134,15 +153,18 @@ metadata <- assay |>
         c("Mayo", "Rush") ~ ifelse(is.na(.x), .x,
                                    paste(dataGenerationSite, .x, sep = "_")),
         # Pre-pend "NYGC" + "MSSM" or "Columbia" to the batch, but leave NAs alone
-        "NYGC" ~ ifelse(is.na(.x), .x,
-                        paste(dataGenerationSite, dataContributionGroup, .x, sep = "_"))
+        "NYGC" ~ case_when(
+          is.na(.x) ~ .x,
+          dataContributionGroup == "Columbia" ~ paste("NYGC_Columbia", .x, sep = "_"),
+          # All MSSM and sample swaps
+          .default = paste("NYGC_MSSM", .x, sep = "_")
+        )
       )
     )
   )
 
 # Fill missing batch information where it was left out for sample swaps
-metadata <- fill_missing_categorical(metadata, "rnaBatch")
-metadata <- fill_missing_categorical(metadata, "libraryBatch")
+metadata <- fill_missing_rnaBatch(metadata, "rnaBatch")
 
 # Fill missing RIN and DV200, most of which are from sample swaps
 metadata <- fill_missing_numeric(metadata, "DV200")
@@ -154,19 +176,28 @@ metadata <- fill_missing_numeric(metadata, "RIN")
 # Download the count matrix from Synapse. The "dataset" variable must be set
 # prior to including this code and should match one of the data set names in
 # config.yml.
-syn_id <- configs[[dataset]]$count_matrix_synid
-counts <- synGet(syn_id, downloadLocation = "downloads")$path |>
-  read.table(header = TRUE) |>
+syn_ids <- configs[[dataset]]$count_matrix_synids
+counts <- lapply(syn_ids, function(syn_id) {
+  synGet(syn_id, downloadLocation = "downloads")$path |>
+    read.table(header = TRUE) |>
 
-  # RSEM adds a transcript ID column that we don't need
-  dplyr::select(-transcript_id.s.) |>
+    # RSEM adds a transcript ID column that we don't need
+    dplyr::select(-transcript_id.s.) |>
 
-  # Genes that end with version number followed by _PAR_Y should be removed,
-  # as the counts are identical to their non-PAR_Y counterparts
-  dplyr::filter(!grepl("\\.[0-9]+_PAR_Y", gene_id)) |>
+    # Genes that end with version number followed by _PAR_Y should be removed,
+    # as the counts are identical to their non-PAR_Y counterparts
+    dplyr::filter(!grepl("\\.[0-9]+_PAR_Y", gene_id)) |>
 
-  # Set the rownames to the gene_id column and remove the column
-  tibble::column_to_rownames("gene_id") |>
+    # Set the rownames to the gene_id column and remove the column
+    tibble::column_to_rownames("gene_id") |>
+    as.data.frame()
+})
+
+# Check for duplicate samples
+samps <- unlist(lapply(counts, colnames))
+stopifnot(all(table(samps) == 1))
+
+counts <- purrr::list_cbind(counts) |>
   as.matrix()
 
 # Make sure metadata and counts contain the same samples in the same order
@@ -508,6 +539,7 @@ data_final <- list("metadata" = metadata, "counts" = counts[!zeros, ],
 saveRDS(data_final, file.path("data", "QC",
                               paste0(dataset, "_qc.rds")))
 
+
 # ---- print-final-qc-results ----
 
 n_passes |>
@@ -515,8 +547,10 @@ n_passes |>
   tidyr::pivot_wider(names_from = Var2, values_from = Freq) |>
   dplyr::rename(Tissue = Var1)
 
+
 # ---- print-qc-failures ----
 
 failures |>
   group_by(tissue) |>
-  summarize(`Specimen IDs` = paste(specimenID, collapse = ", "))
+  summarize(`Specimen IDs` = paste(str_replace(specimenID, "^X", ""),
+                                   collapse = ", "))
