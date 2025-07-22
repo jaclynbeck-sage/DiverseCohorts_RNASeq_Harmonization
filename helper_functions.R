@@ -36,7 +36,7 @@ download_fastqc <- function(dataset_config, load_saved_stats = FALSE) {
     # renaming the files doesn't lose the sample names we need
     sample_names <- str_replace(basename(files), "_fastqc.zip", "")
 
-    if (all(grepl("NYBB_", files))) {
+    if (any(grepl("NYBB_", files))) {
       files <- remap_columbia_fastqc(files)
     }
 
@@ -87,7 +87,8 @@ download_fastqc <- function(dataset_config, load_saved_stats = FALSE) {
 # Columbia samples inside the fastqc files have a different sample name than the
 # file name, which breaks fastqcr::read. Here we rename all the zip files to
 # match the sample name inside. The original names are retained prior to calling
-# this function so we can map new names onto old ones.
+# this function so we can map new names onto old ones. This function has no
+# effect on the Biggs Institute files as their sample names match the file name.
 remap_columbia_fastqc <- function(fastqc_files) {
   new_files <- sapply(fastqc_files, function(zip_file) {
     # Lists what's in the zip file without extracting it

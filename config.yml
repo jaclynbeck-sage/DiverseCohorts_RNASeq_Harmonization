@@ -1,8 +1,9 @@
 default:
   # General variables for all data sets
+  harmonization_folder_synid: "syn64176379" # The ID of the Sage_RNASeq_Reprocessing folder on Synapse
   gtf_file: "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_43/gencode.v43.primary_assembly.annotation.gtf.gz"
   fasta_file: "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_43/GRCh38.primary_assembly.genome.fa.gz"
-  gene_metadata_synid: "" # TODO
+  gene_metadata_synid: "syn68742281" # The ID of the gene_metadata file (once it has been uploaded)
   individual_metadata_synid: "syn64759872" #"syn51757646" # Temporary: Use file with corrections to MSBB samples
   biospecimen_metadata_synid: "syn51757645"
   assay_metadata_synid: "syn51757643"
@@ -19,10 +20,13 @@ default:
   # Dataset-specific variables
   Columbia:
     name: "Columbia"
-    # Columbia had no sample swaps sequenced with its data so there is only one ID per file type
-    fastqc_folder_synids: ["syn66498852"]
-    multiqc_json_synids: ["syn64558076"]
-    count_matrix_synids: ["syn64289221"]
+    # Columbia had no sample swaps but has the main data set, one extra sample
+    # that was aligned later, and Biggs Institute data
+    fastqc_folder_synids: ["syn66498852", "syn68527843", "syn68527919"]
+    multiqc_json_synids: ["syn64558076", "syn68527857", "syn68527933"]
+    count_matrix_synids: ["syn64289221", "syn68527822", "syn68527907"]
+    # This is the only sample for the STG, so it needs to be removed
+    stg_remove_id: "BI20-004_stg"
 
   Mayo_Emory:
     name: "Mayo_Emory"
@@ -33,14 +37,16 @@ default:
 
   MSSM:
     name: "MSSM"
-    # Original MSSM data, MSSM sample swaps sequenced at NYGC, and sample swaps from other centers
+    # Original MSSM data, MSSM sample swaps sequenced at NYGC, and sample swaps
+    # from other centers
     fastqc_folder_synids: ["syn66499292", "syn68243822", "syn68244071"]
     multiqc_json_synids: ["syn64558496", "syn68243798", "syn68244078"]
     count_matrix_synids: ["syn64176431", "syn68243794", "syn68244062"]
 
   Rush:
     name: "Rush"
-    # Rush's sample swaps are included in the original data so there is only one ID per file type
+    # Rush's sample swaps are included in the original data so there is only one
+    # ID per file type
     fastqc_folder_synids: ["syn66499471"]
     multiqc_json_synids: ["syn64558758"]
     count_matrix_synids: ["syn64176441"]

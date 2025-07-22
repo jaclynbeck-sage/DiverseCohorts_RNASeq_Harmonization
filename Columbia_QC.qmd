@@ -57,6 +57,12 @@ FastQC and MultiQC stats
 #| label: download-qc-stats
 ```
 
+Remap IDs in the MultiQC stats, which has original IDs instead of the current IDs used in all other data
+
+```{r}
+#| label: columbia-remap-ids
+```
+
 </details>
 
 # Validation

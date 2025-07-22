@@ -114,16 +114,16 @@ metadata <- assay |>
   # Remove 7 duplicate Rush samples that are in batch B74
   subset(!(specimenID %in% duplicates_remove & sequencingBatch == duplicates_batch)) |>
 
+  # Remove the single STG sample from Columbia
+  subset(specimenID != configs$Columbia$stg_remove_id) |>
+
   # Fix or alter some fields
   mutate(
-    # Make specimenID match column names of count matrix
-    specimenID = make.names(specimenID),
-
     # Make PMI numeric
     PMI = suppressWarnings(as.numeric(PMI)),
 
-    # Fix missing batch information for MSSM sample swaps sequenced at MSSM.
-    # Batch information from NYGC.
+    # Fix missing batch information for MSSM sample swaps sequenced at NYGC.
+    # Batch information was confirmed by NYGC.
     rnaBatch = case_when(
       is.na(rnaBatch) & dataGenerationSite == "NYGC" &
         sampleExchangeOrigin == "MSSM" ~ "B01",
@@ -160,7 +160,11 @@ metadata <- assay |>
           .default = paste("NYGC_MSSM", .x, sep = "_")
         )
       )
-    )
+    ),
+
+    # Make specimenID match column names of count matrix -- needs to be done
+    # last so we don't break references to original specimenIDs above
+    specimenID = make.names(specimenID)
   )
 
 # Fill missing batch information where it was left out for sample swaps
@@ -219,14 +223,55 @@ fastqc_data <- readRDS(file.path("data", "QC",
                                  paste0(dataset, "_fastqc_stats.rds")))
 multiqc_stats <- readRDS(file.path("data", "QC",
                                    paste0(dataset, "_multiqc_stats.rds")))
-gene_info <- read.csv(file.path("data", "gene_metadata.csv"))
+
+gene_file <- synGet(configs$gene_metadata_synid, downloadLocation = "data")
+gene_info <- read.csv(gene_file$path)
 
 fastqc_data <- lapply(fastqc_data, function(df) {
   merge(dplyr::select(metadata, specimenID, tissue), df)
 })
 
-# Rush has to alter specimen IDs before merging, taken care of elsewhere
-if (dataset != "Rush") {
+# Columbia and Rush have to alter specimen IDs before merging, taken care of elsewhere
+if (dataset != "Columbia" & dataset != "Rush") {
+  multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
+}
+
+
+# ---- columbia-remap-ids ----
+
+# Columbia only -- remap specimen IDs in the mulitqc stats data frame
+if (dataset == "Columbia") {
+  # New vs old ID information is contained in the fastqc filenames
+  id_map <- fastqc_data$basic_statistics |>
+    select(specimenID, Filename) |>
+    mutate(old_id = str_replace(Filename, "_(1|2).gz", ""),
+           old_id = make.names(old_id)) |>
+    select(-Filename) |>
+    distinct()
+
+  multiqc_stats <- multiqc_stats |>
+    dplyr::rename(old_id = specimenID) |>
+    merge(id_map) |>
+    select(-old_id)
+
+  multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
+}
+
+
+# ---- rush-remove-duplicates ----
+
+# Rush only -- Remove duplicate samples
+if (dataset == "Rush") {
+  to_remove <- lapply(configs$Rush$remove_samples_fastqc, function(id) {
+    grep(id, fastqc_data$basic_statistics$sample, value = TRUE)
+  })
+
+  fastqc_data <- lapply(fastqc_data, function(df) {
+    subset(df, !(sample %in% unlist(to_remove)))
+  })
+
+  multiqc_stats <- subset(multiqc_stats, !(specimenID %in% configs$Rush$remove_samples_fastqc)) |>
+    mutate(specimenID = str_replace(specimenID, "_S[0-9]+", ""))
   multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
 }
 
@@ -296,8 +341,9 @@ meta_sub <- subset(metadata, base_content_warn | phred_score_warn | !phred_score
   dplyr::rename(Tissue = tissue, `Specimen ID` = specimenID) |>
   arrange(Tissue, `Specimen ID`)
 
-meta_sub
-
+if (nrow(meta_sub) > 0) {
+  meta_sub
+}
 
 # ---- validate-multiqc ----
 
@@ -393,7 +439,9 @@ meta_sub <- subset(metadata, reads_mapped_warn | reads_duplicated_warn |
   dplyr::rename(Tissue = tissue, `Specimen ID` = specimenID) |>
   arrange(Tissue, `Specimen ID`)
 
-meta_sub
+if (nrow(meta_sub) > 0) {
+  meta_sub
+}
 
 
 # ---- validate-sex ----
@@ -420,7 +468,9 @@ meta_sub <- subset(metadata, !sex_valid) |>
                 Tissue = tissue) |>
   arrange(Tissue, `Specimen ID`)
 
-meta_sub
+if (nrow(meta_sub) > 0) {
+  meta_sub
+}
 
 
 # ---- validate-pca ----
@@ -467,7 +517,9 @@ meta_sub <- subset(metadata, !pca_valid) |>
   dplyr::rename(`Specimen ID` = specimenID, Tissue = tissue) |>
   arrange(Tissue, `Specimen ID`)
 
-meta_sub
+if (nrow(meta_sub) > 0) {
+  meta_sub
+}
 
 
 # ---- validate-dv200 ----
@@ -512,7 +564,9 @@ meta_sub <- subset(metadata, !DV200_valid) |>
   dplyr::rename(`Specimen ID` = specimenID, Tissue = tissue) |>
   arrange(Tissue, DV200, RIN)
 
-meta_sub
+if (nrow(meta_sub) > 0) {
+  meta_sub
+}
 
 
 # ---- save-samples ----

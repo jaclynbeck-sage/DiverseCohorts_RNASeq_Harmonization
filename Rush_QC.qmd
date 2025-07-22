@@ -60,20 +60,7 @@ FastQC and MultiQC stats
 ## Remove duplicate Rush samples from QC files
 
 ```{r}
-#| label: remove-duplicates
-
-to_remove <- lapply(configs$Rush$remove_samples_fastqc, function(id) {
-  grep(id, fastqc_data$basic_statistics$sample, value = TRUE)
-})
-
-fastqc_data <- lapply(fastqc_data, function(df) {
-  subset(df, !(sample %in% unlist(to_remove)))
-})
-
-multiqc_stats <- subset(multiqc_stats, !(specimenID %in% configs$Rush$remove_samples_fastqc)) |>
-  mutate(specimenID = str_replace(specimenID, "_S[0-9]+", ""))
-multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
-
+#| label: rush-remove-duplicates
 ```
 
 </details>
