@@ -1,0 +1,61 @@
+---
+title: "Diverse Cohorts RNA-Seq CQN (Mayo / Emory)"
+author: "Jaclyn Beck"
+format:
+  html:
+    df-print: kable
+    toc: true
+    toc-depth: 2
+editor: visual
+code-fold: true
+---
+
+# Setup
+
+<details>
+
+```{r}
+#| cache: false
+#| label: read-chunk
+#| include: false
+
+knitr::read_chunk("cqn_functions.R")
+```
+
+```{r}
+#| label: include-libraries
+#| output: false
+```
+
+```{r}
+#| label: setup
+#| output: false
+
+dataset <- "Mayo_Emory"
+
+# Setting to TRUE will upload the CQN matrix to the harmonization
+# project on Synapse.
+upload_to_synapse <- FALSE
+```
+
+Load filtered counts and metadata
+
+```{r}
+#| label: load-data
+#| output: false
+```
+
+</details>
+
+# Adjust for GC content
+
+```{r}
+#| label: run-cqn
+#| warning: false
+```
+
+## Plot CQN results
+
+```{r}
+#| label: plot-cqn
+```

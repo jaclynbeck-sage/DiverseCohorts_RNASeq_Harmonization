@@ -12,6 +12,7 @@ default:
   upload:
     processed_data_folder_synid: "syn68755578" # The Sage_RNASeq_Reprocessing processed data folder on Synapse
     counts_folder_synid: "syn68755624" # Post-QC counts folder
+    cqn_folder_synid: "syn68755812" # CQN matrices folder
 
   # Thresholds for validation
   thresholds:

@@ -176,6 +176,14 @@ Samples were marked as QC failures if:
 
 #### Samples that will be removed
 
+Summary
+
 ```{r}
-#| label: print-qc-failures
+#| label: print-qc-failures-summary
+```
+
+Details
+
+```{r}
+#| label: print-qc-failures-detail
 ```

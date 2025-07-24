@@ -229,7 +229,7 @@ multiqc_stats <- readRDS(file.path("data", "QC",
                                    paste0(dataset, "_multiqc_stats.rds")))
 
 gene_file <- synGet(configs$download$gene_metadata_synid,
-                    downloadLocation = "data")
+                    downloadLocation = "downloads")
 gene_info <- read.csv(gene_file$path)
 
 fastqc_data <- lapply(fastqc_data, function(df) {
@@ -646,13 +646,15 @@ n_passes |>
   dplyr::rename(Tissue = Var1)
 
 
-# ---- print-qc-failures ----
+# ---- print-qc-failures-summary ----
 
 failures |>
   group_by(tissue) |>
   summarize(`Specimen IDs` = paste(str_replace(specimenID, "^X", ""),
                                    collapse = ", "))
 
+
+# ---- print-qc-failures-detail ----
 
 failures_detail <- failures |>
   select(specimenID, tissue, isSampleExchange, sampleExchangeOrigin, cohort,

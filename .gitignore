@@ -51,6 +51,7 @@ rsconnect/
 # HTML and other QMD output
 *.html
 *_QC_files/
+*_CQN_files/
 
 # CSV and PDF files
 *.csv
