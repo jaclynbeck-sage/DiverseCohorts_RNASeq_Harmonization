@@ -59,7 +59,7 @@ write.csv(gc_content, file.path("data", "gene_metadata.csv"),
 synLogin()
 
 syn_file <- File(file.path("data", "gene_metadata.csv"),
-                 parent = configs$upload$harmonization_folder_synid)
+                 parent = configs$upload$processed_data_folder_synid)
 syn_file <- synStore(
   syn_file,
   forceVersion = FALSE,

@@ -10,8 +10,8 @@ default:
 
   # Where to upload files
   upload:
-    harmonization_folder_synid: "syn64176379" # The Sage_RNASeq_Reprocessing folder on Synapse
-    counts_folder_synid: "syn68742161" # Post-QC counts folder
+    processed_data_folder_synid: "syn68755578" # The Sage_RNASeq_Reprocessing processed data folder on Synapse
+    counts_folder_synid: "syn68755624" # Post-QC counts folder
 
   # Thresholds for validation
   thresholds:

@@ -609,7 +609,10 @@ if (upload_to_synapse) {
 
   syn_file <- File(counts_filename, parent = configs$upload$counts_folder_synid)
 
-  provenance <- c(configs$download,
+  provenance <- c(configs$download$individual_metadata_synid,
+                  configs$download$biospecimen_metadata_synid,
+                  configs$download$assay_metadata_synid,
+                  configs$download$gene_metadata_synid,
                   configs[[dataset]]$fastq_folder_synids,
                   configs[[dataset]]$multiqc_json_synids,
                   configs[[dataset]]$count_matrix_synids)
