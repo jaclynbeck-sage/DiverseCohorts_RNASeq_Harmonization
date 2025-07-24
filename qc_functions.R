@@ -17,6 +17,10 @@ library(sageRNAUtils)
 
 configs <- config::get(file = "config.yml")
 
+# Defaults that should be over-written in the qmd file
+dataset <- NULL
+upload_to_synapse <- FALSE
+
 
 # ---- download-metadata ----
 
@@ -89,15 +93,15 @@ fill_missing_rnaBatch <- function(metadata, col_name) {
 # Download the individual, biospecimen, and assay metadata
 synLogin()
 
-ind <- synGet(configs$individual_metadata_synid,
+ind <- synGet(configs$download$individual_metadata_synid,
               downloadLocation = "downloads",
               ifcollision = "overwrite.local")$path |>
   read.csv()
-bio <- synGet(configs$biospecimen_metadata_synid,
+bio <- synGet(configs$download$biospecimen_metadata_synid,
               downloadLocation = "downloads",
               ifcollision = "overwrite.local")$path |>
   read.csv()
-assay <- synGet(configs$assay_metadata_synid,
+assay <- synGet(configs$download$assay_metadata_synid,
                 downloadLocation = "downloads",
                 ifcollision = "overwrite.local")$path |>
   read.csv()
@@ -224,7 +228,8 @@ fastqc_data <- readRDS(file.path("data", "QC",
 multiqc_stats <- readRDS(file.path("data", "QC",
                                    paste0(dataset, "_multiqc_stats.rds")))
 
-gene_file <- synGet(configs$gene_metadata_synid, downloadLocation = "data")
+gene_file <- synGet(configs$download$gene_metadata_synid,
+                    downloadLocation = "data")
 gene_info <- read.csv(gene_file$path)
 
 fastqc_data <- lapply(fastqc_data, function(df) {
@@ -497,8 +502,7 @@ results <- sageRNAUtils::find_pca_outliers_by_group(
 plts <- lapply(names(results$group_results), function(res_name) {
   plt <- sageRNAUtils::plot_pca_outliers(
     results$group_results[[res_name]]$pca_df,
-    results$group_results[[res_name]]$pc1_threshold,
-    results$group_results[[res_name]]$pc2_threshold,
+    results$group_results[[res_name]]$thresholds,
     print_plot = FALSE
   ) +
     ggtitle(res_name)
@@ -593,6 +597,43 @@ data_final <- list("metadata" = metadata, "counts" = counts[!zeros, ],
 saveRDS(data_final, file.path("data", "QC",
                               paste0(dataset, "_qc.rds")))
 
+# Save counts to CSV and upload to Synapse
+counts_filename <- file.path("data", "counts_post_qc",
+                             paste0(dataset, "_counts_filtered.csv"))
+
+write.csv(counts[!zeros, ], counts_filename, quote = FALSE)
+
+# Set `upload_to_synapse` to TRUE or FALSE in the qmd notebook
+if (upload_to_synapse) {
+  synLogin()
+
+  syn_file <- File(counts_filename, parent = configs$upload$counts_folder_synid)
+
+  provenance <- c(configs$download,
+                  configs[[dataset]]$fastq_folder_synids,
+                  configs[[dataset]]$multiqc_json_synids,
+                  configs[[dataset]]$count_matrix_synids)
+
+  github <- c(
+    paste0(
+      "https://github.com/jaclynbeck-sage/DiverseCohorts_RNASeq_Harmonization/",
+      "blob/main/02_", dataset, "_QC.qmd"
+      ),
+    paste0(
+      "https://github.com/jaclynbeck-sage/DiverseCohorts_RNASeq_Harmonization/",
+      "blob/main/qc_functions.R"
+    )
+  )
+
+  syn_file <- synStore(
+    syn_file,
+    forceVersion = FALSE,
+    used = provenance,
+    executed = github
+  )
+}
+
+
 
 # ---- print-final-qc-results ----
 
@@ -608,3 +649,41 @@ failures |>
   group_by(tissue) |>
   summarize(`Specimen IDs` = paste(str_replace(specimenID, "^X", ""),
                                    collapse = ", "))
+
+
+failures_detail <- failures |>
+  select(specimenID, tissue, isSampleExchange, sampleExchangeOrigin, cohort,
+         contains("_warn"), contains("_valid")) |>
+  mutate(
+    `Specimen ID` = str_replace(specimenID, "^X", ""),
+    `Sample Exchange?` = case_when(
+      isSampleExchange & sampleExchangeOrigin != dataset ~ paste0("Yes (", sampleExchangeOrigin, ")"),
+      .default = "No"
+    ),
+    `Base content` = ifelse(base_content_warn == TRUE, "WARN", "."),
+    `Phred score` = case_when(
+      !phred_score_valid ~ "FAIL",
+      phred_score_warn ~ "WARN",
+      .default = "."
+    ),
+    `Reads Mapped` = case_when(
+      !reads_mapped_valid ~ "FAIL",
+      reads_mapped_warn ~ "WARN",
+      .default = "."
+    ),
+    `Reads Duplicated` = case_when(
+      !reads_duplicated_valid ~ "FAIL",
+      reads_duplicated_warn ~ "WARN",
+      .default = "."
+    ),
+    `Sex check` = ifelse(sex_valid, ".", "FAIL"),
+    `PCA check` = ifelse(pca_valid, ".", "FAIL"),
+    `DV200 check` = ifelse(DV200_valid, ".", "FAIL")
+  ) |>
+  select(`Specimen ID`, tissue, cohort, `Sample Exchange?`,
+         `Base content`, `Phred score`, `Reads Mapped`, `Reads Duplicated`,
+         `Sex check`, `PCA check`, `DV200 check`) |>
+  dplyr::rename(Tissue = tissue, Cohort = cohort) |>
+  arrange(Tissue, `Specimen ID`)
+
+failures_detail

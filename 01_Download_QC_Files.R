@@ -42,13 +42,13 @@ saveRDS(rush_multiqc, file.path(QC_folder, "Rush_multiqc_stats.rds"))
 
 # Gene length and GC content ---------------------------------------------------
 
-# Set download method to 'wget'. Otherwise rtracklayer will timeout trying to
+# Set download method to 'curl'. Otherwise rtracklayer will timeout trying to
 # download the fasta file
 method_old <- getOption("download.file.method")
-options(download.file.method = "wget")
+options(download.file.method = "curl")
 
-gc_content <- sageRNAUtils::get_gc_content_gtf(configs$gtf_file,
-                                               configs$fasta_file,
+gc_content <- sageRNAUtils::get_gc_content_gtf(configs$download$gtf_file,
+                                               configs$download$fasta_file,
                                                include_introns = FALSE)
 
 options(download.file.method = method_old)
@@ -59,9 +59,10 @@ write.csv(gc_content, file.path("data", "gene_metadata.csv"),
 synLogin()
 
 syn_file <- File(file.path("data", "gene_metadata.csv"),
-                 parent = configs$harmonization_folder_synid)
+                 parent = configs$upload$harmonization_folder_synid)
 syn_file <- synStore(
   syn_file,
-  used = c(configs$gtf_file, configs$fasta_file),
+  forceVersion = FALSE,
+  used = c(configs$download$gtf_file, configs$download$fasta_file),
   executed = "https://github.com/jaclynbeck-sage/DiverseCohorts_RNASeq_Harmonization/blob/main/01_Download_QC_Files.R"
 )

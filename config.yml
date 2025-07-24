@@ -1,12 +1,17 @@
 default:
-  # General variables for all data sets
-  harmonization_folder_synid: "syn64176379" # The ID of the Sage_RNASeq_Reprocessing folder on Synapse
-  gtf_file: "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_43/gencode.v43.primary_assembly.annotation.gtf.gz"
-  fasta_file: "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_43/GRCh38.primary_assembly.genome.fa.gz"
-  gene_metadata_synid: "syn68742281" # The ID of the gene_metadata file (once it has been uploaded)
-  individual_metadata_synid: "syn64759872" #"syn51757646" # Temporary: Use file with corrections to MSBB samples
-  biospecimen_metadata_synid: "syn51757645"
-  assay_metadata_synid: "syn51757643"
+  # Where to download files from
+  download:
+    gtf_file: "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_43/gencode.v43.primary_assembly.annotation.gtf.gz"
+    fasta_file: "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_43/GRCh38.primary_assembly.genome.fa.gz"
+    gene_metadata_synid: "syn68742281" # The ID of the gene_metadata file (once it has been uploaded)
+    individual_metadata_synid: "syn64759872" #"syn51757646" # Temporary: Use file with corrections to MSBB samples
+    biospecimen_metadata_synid: "syn51757645"
+    assay_metadata_synid: "syn51757643"
+
+  # Where to upload files
+  upload:
+    harmonization_folder_synid: "syn64176379" # The Sage_RNASeq_Reprocessing folder on Synapse
+    counts_folder_synid: "syn68742161" # Post-QC counts folder
 
   # Thresholds for validation
   thresholds:

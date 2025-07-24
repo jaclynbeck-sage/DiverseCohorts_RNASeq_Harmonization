@@ -1,5 +1,5 @@
 ---
-title: "Diverse Cohorts RNA-Seq QC (MSSM)"
+title: "Diverse Cohorts RNA-Seq QC (Columbia)"
 author: "Jaclyn Beck"
 format:
   html:
@@ -32,7 +32,11 @@ knitr::read_chunk("qc_functions.R")
 #| label: setup
 #| output: false
 
-dataset <- "MSSM"
+dataset <- "Columbia"
+
+# Setting to TRUE will upload the filtered counts file (post-QC) to the harmonization
+# project on Synapse.
+upload_to_synapse <- FALSE
 ```
 
 ## Load files
@@ -55,6 +59,12 @@ FastQC and MultiQC stats
 
 ```{r}
 #| label: download-qc-stats
+```
+
+Remap IDs in the MultiQC stats, which has original IDs instead of the current IDs used in all other data
+
+```{r}
+#| label: columbia-remap-ids
 ```
 
 </details>
