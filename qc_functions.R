@@ -14,6 +14,7 @@ library(matrixStats)
 library(dplyr)
 library(stringr)
 library(sageRNAUtils)
+library(forcats)
 
 configs <- config::get(file = "config.yml")
 
@@ -110,6 +111,15 @@ assay <- synGet(configs$download$assay_metadata_synid,
 duplicates_remove <- configs$Rush$remove_specimenIDs # 7 samples
 duplicates_batch <- configs$Rush$remove_specimenIDs_batch # B74
 
+# Columbia only has a single individual with "race" = "Asian" and a single
+# individual with "race" = "White", so we need to remove those individuals.
+# Otherwise we can't use race as a covariate in a regression.
+columbia_remove_ids <- subset(ind, dataContributionGroup == "Columbia" &
+                                race %in% c("Asian", "White")) |>
+  pull(individualID)
+
+stopifnot(length(columbia_remove_ids) == 2)
+
 # Combine the 3 metadatas and fix a few fields
 metadata <- assay |>
   merge(bio) |>
@@ -118,8 +128,9 @@ metadata <- assay |>
   # Remove 7 duplicate Rush samples that are in batch B74
   subset(!(specimenID %in% duplicates_remove & sequencingBatch == duplicates_batch)) |>
 
-  # Remove the single STG sample from Columbia
-  subset(specimenID != configs$Columbia$stg_remove_id) |>
+  # Remove the single STG sample and single Asian sample from Columbia
+  subset(specimenID != configs$Columbia$stg_remove_id &
+           !(individualID %in% columbia_remove_ids)) |>
 
   # Fix or alter some fields
   mutate(
@@ -281,26 +292,102 @@ if (dataset == "Rush") {
 }
 
 
+# ---- plot-demographic-info ----
+
+make_bar_plot <- function(metadata, var_of_interest, facet_var = "tissue") {
+  ord <- metadata |>
+    mutate(variable = fct_infreq(get(var_of_interest))) |>
+    pull(variable) |>
+    levels()
+
+  meta_tmp <- metadata |>
+    group_by_at(c(var_of_interest, facet_var)) |>
+    dplyr::count() |>
+    mutate(variable = factor(get(var_of_interest), levels = ord))
+
+  plt <- ggplot(meta_tmp, aes(x = variable, y = n, fill = variable)) +
+    geom_col() +
+    geom_text(aes(label = n), vjust = -0.5) +
+    theme_bw() +
+    xlab(NULL) +
+    ylab("count") +
+    labs(fill = var_of_interest) +
+    scale_fill_viridis(discrete = TRUE, begin = 0.2) +
+    theme(strip.background = element_blank(),
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          strip.text = element_text(face = "bold"),
+          title = element_text(face = "bold"))
+
+  if (!is.null(facet_var)) {
+    plt <- plt + facet_wrap(facet_var) +
+      labs(title = paste(facet_var, "vs", var_of_interest))
+  } else {
+    plt <- plt + labs(title = var_of_interest)
+  }
+
+  plt
+}
+
+make_bar_plot(metadata, "tissue", facet_var = NULL)
+
+make_bar_plot(metadata, "ADoutcome")
+
+make_bar_plot(metadata, "sex")
+
+make_bar_plot(metadata, "race")
+
+make_bar_plot(metadata, "isHispanic")
+
+make_bar_plot(metadata, "dataContributionGroup")
+
+make_bar_plot(metadata, "dataContributionGroup", facet_var = "rnaBatch")
+
+make_bar_plot(metadata, "dataContributionGroup", facet_var = "libraryBatch")
+
+make_bar_plot(metadata, "dataContributionGroup", facet_var = "sequencingBatch")
+
+
+format_histogram_plot <- function(plt) {
+  plt + geom_histogram(aes(fill = after_stat(count))) +
+    theme_bw() +
+    facet_wrap(~tissue) +
+    theme(strip.background = element_blank(),
+          strip.text = element_text(face = "bold"),
+          title = element_text(face = "bold"))
+}
+
+meta_age <- metadata |>
+  mutate(ageDeath = case_when(
+    is.na(ageDeath) | ageDeath == "missing or unknown" ~ NA,
+    ageDeath == "90+" ~ 90,
+    .default = suppressWarnings(as.numeric(ageDeath))
+  ))
+
+(ggplot(meta_age, aes(x = ageDeath)) + labs(title = "ageDeath")) |>
+ format_histogram_plot()
+
+(ggplot(metadata, aes(x = PMI)) + labs(title = "PMI")) |>
+  format_histogram_plot()
+
+(ggplot(meta_age, aes(x = RIN)) + labs(title = "RIN")) |>
+  format_histogram_plot()
+
+(ggplot(meta_age, aes(x = DV200)) + labs(title = "DV200")) |>
+  format_histogram_plot()
+
+
 # ---- validate-fastqc ----
 
 thresholds <- configs$thresholds
 
 # TODO jitter the outlier points
-plt1 <- ggplot(fastqc_data$basic_statistics,
-               aes(x = tissue, y = percent_gc_content, fill = read)) +
-  geom_boxplot(width = 0.5) +
-  theme_bw() +
-  ggtitle("Percent GC Content")
-
-print(plt1)
-
-plt2 <- ggplot(fastqc_data$base_content, aes(x = base, y = mean_base_deviation, fill = base)) +
+plt1 <- ggplot(fastqc_data$base_content, aes(x = base, y = mean_base_deviation, fill = base)) +
   geom_boxplot(width = 0.5) +
   theme_bw() +
   facet_grid(rows = vars(read), cols = vars(tissue)) +
   ggtitle("Mean deviation from expected base proportions")
 
-print(plt2)
+print(plt1)
 
 # Using the mean content deviation from 25% of each base at each position.
 # Mayo uses sum of deviation instead of mean, but they're equivalent for the
@@ -587,12 +674,15 @@ failures <- subset(metadata, valid == FALSE)
 metadata <- subset(metadata, valid == TRUE)
 counts <- counts[, metadata$specimenID]
 multiqc_stats <- subset(multiqc_stats, specimenID %in% metadata$specimenID)
+fastqc_basic_stats <- subset(fastqc_data$basic_statistics,
+                             specimenID %in% metadata$specimenID)
 
 # Remove genes that are all 0's
 zeros <- rowSums(counts) == 0
 
 data_final <- list("metadata" = metadata, "counts" = counts[!zeros, ],
-                   "multiqc_stats" = multiqc_stats)
+                   "multiqc_stats" = multiqc_stats,
+                   "fastqc_stats" = fastqc_basic_stats)
 
 saveRDS(data_final, file.path("data", "QC",
                               paste0(dataset, "_qc.rds")))
@@ -635,7 +725,6 @@ if (upload_to_synapse) {
     executed = github
   )
 }
-
 
 
 # ---- print-final-qc-results ----

@@ -233,3 +233,106 @@ download_multiqc_json <- function(syn_ids) {
   #   percent known junctions
   #   80/20 ratio of gene body coverage
 }
+
+
+# Bin ages in 5-year increments, except for categories "under 65" and "90+"
+bin_ages <- function(ageDeath) {
+  age_labels <- c("missing or unknown", "Under 65", "65-69", "70-74", "75-79",
+                  "80-84", "85-89", "90+")
+
+  ageDeath <- case_when(ageDeath == "90+" ~ 95, # 'cut' will convert back to 90+
+                       ageDeath == "missing or unknown" ~ -1, # 'cut' will convert back to missing
+                       .default = suppressWarnings(as.numeric(ageDeath)))
+
+  cut(as.numeric(ageDeath),
+      breaks = c(-1, 0, 65, 70, 75, 80, 85, 90, 100),
+      labels = age_labels,
+      right = FALSE) |>
+    droplevels()
+}
+
+
+plot_sources_of_variance <- function(cqn_data, clean_covariates) {
+  for (tissue in names(clean_covariates)) {
+    meta_tissue <- clean_covariates[[tissue]]
+    data_tissue <- cqn_data[[tissue]]$y + cqn_data[[tissue]]$offset
+    data_tissue <- data_tissue[, meta_tissue$specimenID]
+
+    rownames(meta_tissue) <- meta_tissue$specimenID
+
+    # Do this on the top 5000 variable genes only so it doesn't take too long to run
+    var_genes <- rowVars(data_tissue) |> sort(decreasing = TRUE) |> names()
+
+    data_tissue <- data_tissue[var_genes[1:5000], ]
+
+    variables <- setdiff(colnames(meta_tissue), "specimenID")
+    mixed_vars <- meta_tissue |>
+      select(where(is.character), where(is.factor)) |>
+      colnames() |>
+      intersect(variables)
+
+    fixed_vars <- setdiff(variables, mixed_vars)
+    mixed_vars <- paste0("(1 | ", mixed_vars, ")")
+
+    form <- paste("~", paste(c(fixed_vars, mixed_vars), collapse = " + "))
+
+    var_part <- fitExtractVarPartModel(data_tissue, form, meta_tissue,
+                                       BPPARAM = MulticoreParam(n_cores))
+    var_part <- sortCols(var_part, FUN = mean)
+
+    plt <- plotVarPart(var_part) +
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+      labs(title = paste("Sources of variance:", tissue), subtitle = "Sorted by mean")
+    print(plt)
+
+    var_part <- sortCols(var_part)
+    plt <- plotVarPart(var_part) +
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+      labs(title = paste("Sources of variance:", tissue), subtitle = "Sorted by median")
+    print(plt)
+
+    var_df <- var_part |>
+      tidyr::pivot_longer(everything(), names_to = "covariate", values_to = "value") |>
+      group_by(covariate) |>
+      summarize(mean_var = mean(value),
+                median_var = median(value),
+                max_var = max(value))
+
+    print(var_df)
+  }
+}
+
+
+plot_batch_overlaps <- function(batch1, batch2) {
+  overlap <- table(batch1, batch2)
+
+  # Force 0 to be white
+  colors <- c("#FFFFFF", corrplot::COL1("Reds", n = 199))
+  corrplot::corrplot(overlap, method = "color", is.corr = FALSE,
+                     col = colors)#, addCoef.col = "gray")
+}
+
+
+plot_resid_qq <- function(resid_mat) {
+  set.seed(100)
+  rand_genes_100 <- sample(rownames(resid_mat), 100)
+  rand_genes_25 <- sample(rand_genes_100, 25)
+
+  resid_df <- as.data.frame(t(resid_mat[rand_genes_100, ])) |>
+    tidyr::pivot_longer(everything(), names_to = "gene", values_to = "expr")
+
+  plt1 <- ggplot(subset(resid_df, gene %in% rand_genes_25), aes(sample = expr)) +
+    stat_qq(size = 0.1) + stat_qq_line(color = "red") +
+    theme_bw() +
+    facet_wrap(~gene, nrow = 5) +
+    ggtitle("QQ plot for 25 random genes")
+
+  print(plt1)
+
+  plt2 <- ggplot(resid_df, aes(sample = expr)) +
+    stat_qq(size = 0.1) + stat_qq_line(color = "red") +
+    theme_bw() +
+    ggtitle("QQ plot for 100 random genes together")
+
+  print(plt2)
+}

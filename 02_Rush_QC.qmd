@@ -3,6 +3,7 @@ title: "Diverse Cohorts RNA-Seq QC (Rush)"
 author: "Jaclyn Beck"
 format:
   html:
+    embed-resources: true
     df-print: kable
     toc: true
     toc-depth: 2
@@ -68,6 +69,12 @@ FastQC and MultiQC stats
 ```
 
 </details>
+
+# Demographics
+
+```{r}
+#| label: plot-demographic-info
+```
 
 # Validation
 
@@ -166,6 +173,7 @@ Samples were marked as QC failures if:
 
 ```{r}
 #| label: save-samples
+#| output: false
 ```
 
 **`{r} ncol(counts)`** of **`{r} orig_size`** samples passed QC. Results by tissue:

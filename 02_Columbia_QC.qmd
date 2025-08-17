@@ -3,6 +3,7 @@ title: "Diverse Cohorts RNA-Seq QC (Columbia)"
 author: "Jaclyn Beck"
 format:
   html:
+    embed-resources: true
     df-print: kable
     toc: true
     toc-depth: 2
@@ -68,6 +69,14 @@ Remap IDs in the MultiQC stats, which has original IDs instead of the current ID
 ```
 
 </details>
+
+# Demographics
+
+Note: This data set had a single Asian individual and a single White individual, with one sample each in 1-2 tissues. These singletons were removed from the data set since it would be impossible to untangle individual differences and tissue differences from gene changes associated with race in these two individuals.
+
+```{r}
+#| label: plot-demographic-info
+```
 
 # Validation
 
@@ -164,6 +173,7 @@ Samples were marked as QC failures if:
 
 ```{r}
 #| label: save-samples
+#| output: false
 ```
 
 **`{r} ncol(counts)`** of **`{r} orig_size`** samples passed QC. Results by tissue:
