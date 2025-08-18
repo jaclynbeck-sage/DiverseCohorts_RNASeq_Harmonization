@@ -1,0 +1,223 @@
+---
+title: "Diverse Cohorts RNA-Seq Regression (Mayo / Emory)"
+author: "Jaclyn Beck"
+format:
+  html:
+    embed-resources: true
+    df-print: kable
+    toc: true
+    toc-depth: 2
+editor: visual
+code-fold: true
+---
+
+# Setup
+
+<details>
+
+```{r}
+#| label: include-libraries
+#| output: false
+
+library(dplyr)
+library(stringr)
+library(matrixStats)
+library(sageRNAUtils)
+library(variancePartition)
+
+source("helper_functions.R")
+
+```
+
+```{r}
+#| label: setup
+#| output: false
+
+dataset <- "Mayo_Emory"
+
+# Setting to TRUE will upload the residuals file to the harmonization project on Synapse.
+upload_to_synapse <- FALSE
+
+# How many cores to use when performing regression
+n_cores <- parallel::detectCores() - 2
+```
+
+## Load files
+
+CQN matrices and cleaned metadata
+
+```{r}
+#| label: load-data-files
+
+cqn_data <- readRDS(file.path("data", "cqn", str_glue("{dataset}_cqn.rds")))
+clean_covariates <- readRDS(file.path("data", "regression",
+                                      str_glue("{dataset}_cleaned_covariates.rds")))
+```
+
+Model recommendations from `variancePartition` and `mvIC`
+
+```{r}
+#| label: load-model-recs
+
+models_vp <- lapply(names(clean_covariates), function(tissue) {
+  readRDS(file.path("data", "regression",
+                    str_glue("{dataset}_{tissue}_var_part_results.rds")))
+})
+names(models_vp) <- names(clean_covariates)
+
+models_mvic <- lapply(names(clean_covariates), function(tissue) {
+  readRDS(file.path("data", "regression",
+                    str_glue("{dataset}_{tissue}_mvIC_results.rds")))
+})
+names(models_mvic) <- names(clean_covariates)
+```
+
+</details>
+
+# Model Recommendations
+
+`variancePartition` recommendations
+
+```{r}
+#| label: print-vp-models
+
+forms <- lapply(names(clean_covariates), function(tissue) {
+  variables <- models_vp[[tissue]]$recommended_vars
+  
+  mixed_effects <- clean_covariates[[tissue]] |>
+    select(where(is.character), where(is.factor)) |>
+    colnames() |>
+    intersect(variables)
+  
+  fixed_effects <- setdiff(variables, mixed_effects)
+  
+  if (length(mixed_effects) > 0) {
+    mixed_effects <- paste0("(1 | ", mixed_effects, ")")
+  }
+  
+  paste("~", paste(c(fixed_effects, mixed_effects), collapse = " + "))
+})
+
+names(forms) <- names(clean_covariates)
+
+print(forms)
+```
+
+`mvIC` recommendations
+
+```{r}
+#| label: print-mvIC-models
+
+forms <- lapply(models_mvic, function(mod_data) {
+  paste(as.character(mod_data$formula), collapse = " ")
+})
+
+print(forms)
+```
+
+# Percent variance explained by covariates
+
+```{r}
+#| label: plot-percent-variance
+
+for (tissue in names(clean_covariates)) {
+  vp <- models_vp[[tissue]]$var_part$var_part_all
+  
+  plt <- plotVarPart(sortCols(vp)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+    labs(title = paste(tissue, "(Sorted by median)"))
+  print(plt)
+
+  plt <- plotVarPart(sortCols(vp, FUN = mean)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+    labs(title = paste(tissue, "(Sorted by mean)"))
+  print(plt)
+}
+```
+
+```{r}
+#| label: print-vp-summary
+
+for (tissue in names(models_vp)) {
+  models_vp[[tissue]]$vp_summary_all |>
+    mutate(mean_pct = round(mean_pct, digits = 5),
+           median_pct = round(median_pct, digits = 5)) |>
+    mutate(tissue = tissue, .before = covariate) |>
+    select(-total_rank) |>
+    as.data.frame() |>
+    print()
+}
+```
+
+# Batch / race overlaps
+
+```{r}
+#| label: plot-batch-overlaps
+
+for (tissue in names(clean_covariates)) {
+  covariates <- clean_covariates[[tissue]]
+  plot_batch_overlaps(covariates$race, covariates$sequencingBatch)
+}
+```
+
+# Final formulas
+
+```{r}
+#| label: final-formulas
+
+formulas <- list(
+  "Mayo_Emory" = list(
+    "dorsolateral prefrontal cortex" = "~ RIN + (1 | sequencingBatch)",
+    "superior temporal gyrus" = "~ RIN + (1 | sequencingBatch)",
+    "caudate nucleus" = "~ RIN"
+  )
+)
+```
+
+# Regression
+
+```{r}
+#| label: do-regression
+
+for (tissue in names(clean_covariates)) {
+  # In case there is a random element anywhere in this process, set a seed for 
+  # reproducibility
+  set.seed(sageRNAUtils::string_to_seed(paste(dataset, tissue, "regression")))
+
+  data_tissue <- cqn_data[[tissue]]
+  data_tissue <- data_tissue$y + data_tissue$offset
+
+  covariates <- clean_covariates[[tissue]]
+  data_tissue <- data_tissue[, covariates$specimenID]
+
+  rownames(covariates) <- covariates$specimenID
+
+  stopifnot(all(colnames(data_tissue) == covariates$specimenID))
+
+  form_tissue <- formulas[[dataset]][[tissue]]
+  print(paste0(tissue, ": ", form_tissue))
+
+  fit <- fitVarPartModel(data_tissue, form_tissue, covariates,
+                         BPPARAM = MulticoreParam(n_cores))
+
+  resid_tissue <- residuals(fit)
+  rownames(resid_tissue) <- rownames(data_tissue)
+
+  plot_resid_qq(resid_tissue)
+
+  write.csv(resid_tissue,
+            file.path("data", "regression", 
+                      str_glue("{dataset}_{tissue}_residuals.csv")),
+            quote = FALSE)
+
+  # Write metadata values
+  model_vars <- all.vars(as.formula(form_tissue))
+  write.csv(covariates[, c("specimenID", model_vars)],
+            file.path("data", "regression", 
+                      str_glue("{dataset}_{tissue}_covariates.csv")),
+            row.names = FALSE, quote = FALSE)
+
+  rm(fit)
+  gc()
+}
+```

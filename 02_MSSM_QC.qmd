@@ -161,17 +161,32 @@ Samples were marked as QC failures if:
 #| label: print-dv200-results
 ```
 
-## Samples with low RIN / high DV200 are all from the same batch
+## Samples with low RIN / high DV200 are all from the same group
 
-rnaBatch: NYGC_MSSM_B03
+**rnaBatch:** NYGC_MSSM_B03
+
+**race:** White
 
 ```{r}
 #| label: dv200-vs-batch
 
-ggplot(metadata, aes(x = RIN, y = DV200, color = rnaBatch)) +
-  geom_jitter(size = 0.5) +
-  theme_bw()
+batch_colors <- rep("gray", length(unique(metadata$rnaBatch)))
+names(batch_colors) <- unique(metadata$rnaBatch)
+batch_colors["NYGC_MSSM_B03"] <- "red"
 
+race_colors <- rep("gray", length(unique(metadata$race)))
+names(race_colors) <- unique(metadata$race)
+race_colors["White"] <- "red"
+
+ggplot(metadata, aes(x = RIN, y = DV200, color = rnaBatch)) +
+  geom_jitter() +
+  theme_bw() +
+  scale_color_manual(values = batch_colors)
+
+ggplot(metadata, aes(x = RIN, y = DV200, color = race)) +
+  geom_jitter() +
+  theme_bw() +
+  scale_color_manual(values = race_colors)
 ```
 
 # Save samples that passed QC
