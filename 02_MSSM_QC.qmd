@@ -161,6 +161,19 @@ Samples were marked as QC failures if:
 #| label: print-dv200-results
 ```
 
+## Samples with low RIN / high DV200 are all from the same batch
+
+rnaBatch: NYGC_MSSM_B03
+
+```{r}
+#| label: dv200-vs-batch
+
+ggplot(metadata, aes(x = RIN, y = DV200, color = rnaBatch)) +
+  geom_jitter(size = 0.5) +
+  theme_bw()
+
+```
+
 # Save samples that passed QC
 
 ```{r}

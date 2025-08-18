@@ -3,6 +3,7 @@ title: "Diverse Cohorts RNA-Seq CQN (Rush)"
 author: "Jaclyn Beck"
 format:
   html:
+    embed-resources: true
     df-print: kable
     toc: true
     toc-depth: 2

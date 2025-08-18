@@ -96,7 +96,10 @@ for (tissue in names(cqn_data)) {
       )
     )
 
-    syn_file <- File(cqn_file, parent = configs$upload$cqn_folder_synid)
+    dataset_folder <- Folder(dataset, parent = configs$upload$cqn_folder_synid)
+    dataset_folder <- synStore(dataset_folder)
+
+    syn_file <- File(cqn_file, parent = dataset_folder)
 
     syn_file <- synStore(
       syn_file,
