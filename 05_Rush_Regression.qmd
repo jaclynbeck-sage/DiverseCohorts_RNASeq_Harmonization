@@ -154,10 +154,14 @@ for (tissue in names(models_vp)) {
 ```{r}
 #| label: plot-batch-overlaps
 
-#for (tissue in names(clean_covariates)) {
-#  covariates <- clean_covariates[[tissue]]
-#  plot_batch_overlaps(covariates$race, covariates$sequencingBatch)
-#}
+for (tissue in names(clean_covariates)) {
+  covariates <- clean_covariates[[tissue]]
+  if (tissue == "dorsolateral prefrontal cortex") {
+      plot_batch_overlaps(covariates$race, covariates$sequencingBatch)
+  } else {
+    plot_batch_overlaps(covariates$race, covariates$libraryBatch)
+  }
+}
 ```
 
 # Final formulas
