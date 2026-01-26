@@ -147,11 +147,12 @@ clean_covariates <- lapply(unique(raw_data$metadata$tissue), function(tissue) {
 
   # Rush only:
   # - There are mostly 2 libraryBatches to 1 rnaBatch, with very few
-  #   libraryBatches that have more than one rnaBatch. sequencingBatch is
-  #   almost exactly 1:many with rnaBatch. I've chosen to use libraryBatch for
-  #   the CN and STG as it is less correlated with race. There is an extremely uneven distribution of race across
-  #   some rna and libraryBatches in the DLPFC, so I've decided to use
-  #   sequencingBatch for that tissue instead even though there are only 3 batches.
+  # libraryBatches that have more than one rnaBatch. sequencingBatch is almost
+  # exactly 1:many with rnaBatch. I've chosen to use libraryBatch for the CN and
+  # STG as it is less correlated with race. There is an extremely uneven
+  # distribution of race across some rna and libraryBatches in the DLPFC, so
+  # I've decided to use sequencingBatch for that tissue instead even though
+  # there are only 3 batches.
   # - Remove cohort as a variable: the MARS cohort has only samples that are
   #   Black / African American, and some cohorts only have 1-2 samples total.
   if (dataset == "Rush") {
