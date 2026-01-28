@@ -15,81 +15,20 @@ library(dplyr)
 library(stringr)
 library(sageRNAUtils)
 library(forcats)
+library(plotly)
 
 configs <- config::get(file = "config.yml")
 
-# Defaults that should be over-written in the qmd file
+
+# ---- not-run ----
+
+# Defaults that should be over-written in the qmd file. This is only here to
+# allow for testing the script directly outside of the QC notebooks.
 dataset <- NULL
 upload_to_synapse <- FALSE
 
 
 # ---- download-metadata ----
-
-# Function to copy DV200 and RIN values from original sample to sample swaps.
-# In the assay metadata, specimens that were sample swaps have these fields
-# set to NA, but the originating specimen has this information. Here we find
-# each originating specimen and copy its RIN and DV200 over to the corresponding
-# sample swap specimen. If there is more than 1 matching specimen with a non-NA
-# value, the non-NA values are averaged to produce an imputed value.
-fill_missing_numeric <- function(metadata, col_name) {
-  # All rows with NA values in the field
-  missing <- subset(metadata, is.na(metadata[, col_name]))
-
-  for (row_ind in 1:nrow(missing)) {
-    # All rows from the same individual and from the same tissue
-    m_rows <- subset(metadata,
-                     individualID == missing$individualID[row_ind] &
-                       tissue == missing$tissue[row_ind])
-
-    # Average all non-NA values that match the specimen with the missing value.
-    # In most cases, there will only be one matching non-NA value, but for a few
-    # samples there might be 2 non-NA values, in cases where two centers
-    # processed the RNA separately.
-    # Note: If this sample is not from a sample swap, the value will still be NA
-    missing[row_ind, col_name] <- mean(m_rows[, col_name], na.rm = TRUE)
-  }
-
-  # Fill metadata with replacements for the missing values
-  metadata[is.na(metadata[, col_name]), col_name] <- missing[, col_name]
-  return(metadata)
-}
-
-
-# Function to copy batch values from original sample to sample swaps. In the
-# assay metadata, specimens that were sample swaps have these fields set to NA,
-# but the originating specimen has this information. Here we find each
-# originating specimen and copy its rnaBatch over to the corresponding sample
-# swap specimen.
-fill_missing_rnaBatch <- function(metadata, col_name) {
-  # All rows with NA values in the field
-  missing <- subset(metadata, is.na(metadata[, col_name]))
-
-  for (row_ind in 1:nrow(missing)) {
-    # All rows from the same individual and from the same tissue
-    m_rows <- subset(metadata, individualID == missing$individualID[row_ind] &
-                       tissue == missing$tissue[row_ind])
-
-    # This specimen is highly likely to be a sample swap that was not prepped at
-    # the data generation site. Find the originating site's batch information
-    m_rows <- subset(m_rows,
-                     # Rush, Mayo
-                     (dataGenerationSite == dataContributionGroup) |
-                       # Mayo also processed Emory
-                       (dataGenerationSite == "Mayo" & dataContributionGroup == "Emory") |
-                       # NYGC processed Columbia and MSSM
-                       (dataGenerationSite == "NYGC" & dataContributionGroup %in% c("Columbia", "MSSM")))
-
-    # If exactly 1 unique non-NA value was found from the originating site, use that value
-    if (length(unique(na.omit(m_rows[, col_name]))) == 1) {
-      missing[row_ind, col_name] <- unique(na.omit(m_rows[, col_name]))
-    }
-  }
-
-  # Fill metadata with replacements for the missing values
-  metadata[is.na(metadata[, col_name]), col_name] <- missing[, col_name]
-  return(metadata)
-}
-
 
 # Download the individual, biospecimen, and assay metadata
 synLogin()
@@ -107,10 +46,6 @@ assay <- synGet(configs$download$assay_metadata_synid,
                 ifcollision = "overwrite.local")$path |>
   read.csv()
 
-# Rush has 7 samples in a specific batch that are duplicates and should be removed
-duplicates_remove <- configs$Rush$remove_specimenIDs # 7 samples
-duplicates_batch <- configs$Rush$remove_specimenIDs_batch # B74
-
 # Columbia only has a single individual with "race" = "Asian" and a single
 # individual with "race" = "White", so we need to remove those individuals.
 # Otherwise we can't use race as a covariate in a regression.
@@ -125,8 +60,8 @@ metadata <- assay |>
   merge(bio) |>
   merge(ind) |>
 
-  # Remove 7 duplicate Rush samples that are in batch B74
-  subset(!(specimenID %in% duplicates_remove & sequencingBatch == duplicates_batch)) |>
+  # Remove 7 duplicate Rush samples that are in batch B74, which are marked as "exclude"
+  subset(!exclude) |>
 
   # Remove the single STG sample and single Asian sample from Columbia
   subset(specimenID != configs$Columbia$stg_remove_id &
@@ -137,57 +72,10 @@ metadata <- assay |>
     # Make PMI numeric
     PMI = suppressWarnings(as.numeric(PMI)),
 
-    # Fix missing batch information for MSSM sample swaps sequenced at NYGC.
-    # Batch information was confirmed by NYGC.
-    rnaBatch = case_when(
-      is.na(rnaBatch) & dataGenerationSite == "NYGC" &
-        sampleExchangeOrigin == "MSSM" ~ "B01",
-      .default = rnaBatch
-    ),
-    libraryBatch = case_when(
-      is.na(libraryBatch) & dataGenerationSite == "NYGC" &
-        sampleExchangeOrigin == "MSSM" ~ "B04",
-      specimenID == "213917-2" ~ "B04",
-      is.na(libraryBatch) & dataGenerationSite == "NYGC" &
-        individualID %in% c("29600", "29631", "R1263350", "R3914030") ~ "B01",
-      is.na(libraryBatch) & dataGenerationSite == "NYGC" &
-        individualID %in% c("6434", "R7674931", "R9500594") ~ "B02",
-      is.na(libraryBatch) & dataGenerationSite == "NYGC" &
-        individualID %in% c("28871", "29691", "R5508487", "R9652199") ~ "B03",
-      .default = libraryBatch
-    ),
-
-    # Batches need to be re-named to be unique to each data set --
-    # * Mayo sequenced "Mayo", "Emory", and sample swaps in the same batches
-    # * Rush did the same with "Rush" and sample swaps
-    # * NYGC sequenced "Columbia" separately from "MSSM"
-    across(c(rnaBatch, libraryBatch, sequencingBatch),
-      ~case_match(
-        dataGenerationSite,
-        # Pre-pend "Mayo" or "Rush" to the batch, but leave NAs alone
-        c("Mayo", "Rush") ~ ifelse(is.na(.x), .x,
-                                   paste(dataGenerationSite, .x, sep = "_")),
-        # Pre-pend "NYGC" + "MSSM" or "Columbia" to the batch, but leave NAs alone
-        "NYGC" ~ case_when(
-          is.na(.x) ~ .x,
-          dataContributionGroup == "Columbia" ~ paste("NYGC_Columbia", .x, sep = "_"),
-          # All MSSM and sample swaps
-          .default = paste("NYGC_MSSM", .x, sep = "_")
-        )
-      )
-    ),
-
     # Make specimenID match column names of count matrix -- needs to be done
     # last so we don't break references to original specimenIDs above
     specimenID = make.names(specimenID)
   )
-
-# Fill missing batch information where it was left out for sample swaps
-metadata <- fill_missing_rnaBatch(metadata, "rnaBatch")
-
-# Fill missing RIN and DV200, most of which are from sample swaps
-metadata <- fill_missing_numeric(metadata, "DV200")
-metadata <- fill_missing_numeric(metadata, "RIN")
 
 
 # ---- download-counts ----
@@ -230,6 +118,18 @@ stopifnot(all(metadata$specimenID == colnames(counts)))
 orig_size <- ncol(counts)
 counts_log <- sageRNAUtils::simple_log2norm(counts)
 
+# Shorten tissue names for display but save the original tissue names
+metadata <- metadata |>
+  mutate(tissue_orig = tissue,
+         tissue = as.character(tissue),
+         tissue = case_match(tissue,
+                             "caudate nucleus" ~ "CN",
+                             "dorsolateral prefrontal cortex" ~ "DLPFC",
+                             "superior temporal gyrus" ~ "STG",
+                             "temporal pole" ~ "TP",
+                             .default = tissue),
+         tissue = factor(tissue))
+
 
 # ---- download-qc-stats ----
 
@@ -244,12 +144,13 @@ gene_file <- synGet(configs$download$gene_metadata_synid,
 gene_info <- read.csv(gene_file$path)
 
 fastqc_data <- lapply(fastqc_data, function(df) {
-  merge(dplyr::select(metadata, specimenID, tissue), df)
+  merge(dplyr::select(metadata, specimenID, tissue, tissue_orig), df)
 })
 
 # Columbia and Rush have to alter specimen IDs before merging, taken care of elsewhere
 if (dataset != "Columbia" & dataset != "Rush") {
-  multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
+  multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue, tissue_orig),
+                         multiqc_stats)
 }
 
 
@@ -270,7 +171,8 @@ if (dataset == "Columbia") {
     merge(id_map) |>
     select(-old_id)
 
-  multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
+  multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue, tissue_orig),
+                         multiqc_stats)
 }
 
 
@@ -288,7 +190,8 @@ if (dataset == "Rush") {
 
   multiqc_stats <- subset(multiqc_stats, !(specimenID %in% configs$Rush$remove_samples_fastqc)) |>
     mutate(specimenID = str_replace(specimenID, "_S[0-9]+", ""))
-  multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue), multiqc_stats)
+  multiqc_stats <- merge(dplyr::select(metadata, specimenID, tissue, tissue_orig),
+                         multiqc_stats)
 }
 
 
@@ -296,7 +199,7 @@ if (dataset == "Rush") {
 
 make_bar_plot <- function(metadata, var_of_interest, facet_var = "tissue") {
   ord <- metadata |>
-    mutate(variable = fct_infreq(get(var_of_interest))) |>
+    mutate(variable = fct_infreq(factor(get(var_of_interest)))) |>
     pull(variable) |>
     levels()
 
@@ -305,12 +208,28 @@ make_bar_plot <- function(metadata, var_of_interest, facet_var = "tissue") {
     dplyr::count() |>
     mutate(variable = factor(get(var_of_interest), levels = ord))
 
+  # Add a little extra space for the number label at the top of each bar
+  max_y <- ceiling(max(meta_tmp$n) * 1.02)
+
+  # Decrease bar label text size because a large number of facets makes the
+  # graphs shorter. Also add even more space for the number label to account
+  # for shorter graphs
+  if (!is.null(facet_var) && length(unique(meta_tmp[[facet_var]])) > 3) {
+    text_size = 3
+    max_y <- ceiling(max_y * 1.2)
+  } else if (length(unique(metadata[[var_of_interest]])) > 4) {
+    text_size = 3
+  } else {
+    text_size = 4
+  }
+
   plt <- ggplot(meta_tmp, aes(x = variable, y = n, fill = variable)) +
     geom_col() +
-    geom_text(aes(label = n), vjust = -0.5) +
+    geom_text(aes(label = n), vjust = -0.5, size = text_size) +
     theme_bw() +
     xlab(NULL) +
     ylab("count") +
+    ylim(0, max_y) +
     labs(fill = var_of_interest) +
     scale_fill_viridis(discrete = TRUE, begin = 0.2) +
     theme(strip.background = element_blank(),
@@ -323,6 +242,11 @@ make_bar_plot <- function(metadata, var_of_interest, facet_var = "tissue") {
       labs(title = paste(facet_var, "vs", var_of_interest))
   } else {
     plt <- plt + labs(title = var_of_interest)
+  }
+
+  # Shorten legend title for dataContributionGroup to save space
+  if (var_of_interest == "dataContributionGroup") {
+    plt <- plt + labs(fill = "Contrib. Group")
   }
 
   plt
@@ -348,7 +272,7 @@ make_bar_plot(metadata, "dataContributionGroup", facet_var = "sequencingBatch")
 
 
 format_histogram_plot <- function(plt) {
-  plt + geom_histogram(aes(fill = after_stat(count))) +
+  plt + geom_histogram(aes(fill = after_stat(count)), bins = 30, na.rm = TRUE) +
     theme_bw() +
     facet_wrap(~tissue) +
     theme(strip.background = element_blank(),
@@ -369,10 +293,10 @@ meta_age <- metadata |>
 (ggplot(metadata, aes(x = PMI)) + labs(title = "PMI")) |>
   format_histogram_plot()
 
-(ggplot(meta_age, aes(x = RIN)) + labs(title = "RIN")) |>
+(ggplot(metadata, aes(x = RIN)) + labs(title = "RIN")) |>
   format_histogram_plot()
 
-(ggplot(meta_age, aes(x = DV200)) + labs(title = "DV200")) |>
+(ggplot(metadata, aes(x = DV200)) + labs(title = "DV200")) |>
   format_histogram_plot()
 
 
@@ -380,18 +304,32 @@ meta_age <- metadata |>
 
 thresholds <- configs$thresholds
 
-# TODO jitter the outlier points
-plt1 <- ggplot(fastqc_data$base_content, aes(x = base, y = mean_base_deviation, fill = base)) +
-  geom_boxplot(width = 0.5) +
+base_content <- fastqc_data$base_content |>
+  group_by(read, tissue, base) |>
+  mutate(outlier_color = ifelse(is_outlier_IQR(mean_base_deviation),
+                                "black", NA)) |>
+  ungroup()
+
+plt1 <- ggplot(base_content,
+               aes(x = base, y = mean_base_deviation, fill = base)) +
+  geom_boxplot(width = 0.5, outlier.shape = NA) +
+  geom_jitter(color = base_content$outlier_color,
+              size = 0.5, width = 0.05, na.rm = TRUE) +
   theme_bw() +
   facet_grid(rows = vars(read), cols = vars(tissue)) +
+  scale_fill_viridis(option = "turbo", discrete = TRUE,
+                     begin = 0.1, end = 0.8, alpha = 0.8) +
+  theme(strip.background = element_rect(fill = "#EEEEEE", color = "black"),
+        strip.text = element_text(face = "bold"),
+        title = element_text(face = "bold")) +
   ggtitle("Mean deviation from expected base proportions")
 
 print(plt1)
 
 # Using the mean content deviation from 25% of each base at each position.
 # Mayo uses sum of deviation instead of mean, but they're equivalent for the
-# purposes of outlier finding.
+# purposes of outlier finding. Unlike for the graph, we only want outliers that
+# are on the upper tail (over-representation of a base).
 base_content_outliers <- fastqc_data$base_content |>
   dplyr::group_by(tissue, read, base) |>
   mutate(is_outlier = is_outlier_IQR(mean_base_deviation, tail = "upper")) |>
@@ -488,7 +426,12 @@ plt1 <- ggplot(mqc_plot,
               width = 0.3,
               size = ifelse(mqc_plot$mapped_status == "Pass", 0.5, 1)) +
   theme_bw() +
+  theme(legend.position = "none",
+        title = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab(NULL) +
   scale_color_manual(values = stat_colors) +
+  scale_fill_viridis(discrete = TRUE, begin = 0.2, alpha = 0.7) +
   ggtitle("Percentage of reads mapped")
 
 plt2 <- ggplot(mqc_plot,
@@ -498,8 +441,14 @@ plt2 <- ggplot(mqc_plot,
               width = 0.3,
               size = ifelse(mqc_plot$duplicated_status == "Pass", 0.5, 1)) +
   theme_bw() +
+  theme(title = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  xlab(NULL) +
+  labs(color = "Status") +
   scale_color_manual(values = stat_colors) +
-  ggtitle("Percentage of reads duplicated")
+  scale_fill_viridis(discrete = TRUE, begin = 0.2, alpha = 0.7) +
+  ggtitle("Percentage of reads duplicated") +
+  theme(plot.margin = unit(c(0, 0, 0, 50), units = "pt"))
 
 print(plt1 + plt2)
 
@@ -547,6 +496,9 @@ mismatches <- sageRNAUtils::find_sex_mismatches(
 plts <- sageRNAUtils::plot_sex_mismatch_results(
   mismatches$sex_check_df, thresholds$sex, print_plot = FALSE
 )
+
+plts[[1]] <- plts[[1]] + scale_color_viridis(discrete = TRUE,
+                                             begin = 0.2, end = 0.8)
 print(plts[[1]] + plts[[2]])
 
 metadata$sex_valid <- !(metadata$specimenID %in% mismatches$mismatches)
@@ -587,16 +539,23 @@ results <- sageRNAUtils::find_pca_outliers_by_group(
 )
 
 plts <- lapply(names(results$group_results), function(res_name) {
-  plt <- sageRNAUtils::plot_pca_outliers(
-    results$group_results[[res_name]]$pca_df,
-    results$group_results[[res_name]]$thresholds,
-    print_plot = FALSE
-  ) +
-    ggtitle(res_name)
+  pca_df <- results$group_results[[res_name]]$pca_df
+  pc_thresholds <- results$group_results[[res_name]]$thresholds
+
+  # Color points red if "is_outlier" is TRUE
+  stat_colors <- c("FALSE" = "black", "TRUE" = "red")
+
+  plt <- plot_ly(pca_df, x = ~PC1, y = ~PC2, z = ~PC3,
+                 color = ~is_outlier, colors = stat_colors,
+                 mode = "markers", type = "scatter3d",
+                 size = 0.5,
+                 legendgrouptitle = list(text = "Outlier", font = list(size = 16))) |>
+    plotly::layout(title = res_name)
+
+  return(plt)
 })
 
-# TODO wrap plots differently
-print(Reduce("+", plts))
+htmltools::tagList(plts)
 
 metadata$pca_valid <- !(metadata$specimenID %in% results$outliers)
 
@@ -618,23 +577,45 @@ if (nrow(meta_sub) > 0) {
 thresholds <- configs$thresholds
 
 plt1 <- ggplot(metadata, aes(x = tissue, y = RIN, fill = tissue)) +
-  geom_boxplot(outliers = FALSE) +
-  geom_jitter(size = 0.5) +
-  theme_bw()
+  geom_boxplot(outliers = FALSE, na.rm = TRUE) +
+  geom_jitter(size = 0.5, na.rm = TRUE) +
+  xlab(NULL) +
+  theme_bw() +
+  scale_fill_viridis(discrete = TRUE, begin = 0.1, end = 0.9, alpha = 0.7) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        title = element_text(face = "bold"))
 
 plt2 <- ggplot(metadata, aes(x = tissue, y = DV200, fill = tissue)) +
-  geom_boxplot(outliers = FALSE) +
-  geom_jitter(size = 0.5) +
-  theme_bw()
+  geom_boxplot(outliers = FALSE, na.rm = TRUE) +
+  geom_jitter(size = 0.5, na.rm = TRUE) +
+  xlab(NULL) +
+  theme_bw() +
+  scale_fill_viridis(discrete = TRUE, begin = 0.1, end = 0.9, alpha = 0.7) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        title = element_text(face = "bold"),
+        plot.margin = unit(c(0, 0, 0, 20), units = "pt"))
 
 plt3 <- ggplot(metadata, aes(x = RIN, y = DV200, color = tissue)) +
-  geom_jitter(size = 0.5) +
-  theme_bw()
+  geom_jitter(size = 0.5, na.rm = TRUE) +
+  theme_bw() +
+  scale_color_viridis(discrete = TRUE, begin = 0.1, end = 0.9) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        title = element_text(face = "bold"))
 
-plt4 <- ggplot(metadata, aes(x = rank(DV200), y = DV200, color = tissue)) +
-  geom_point(size = 0.5) +
+dv200_rank <- metadata |>
+  group_by(tissue) |>
+  mutate(rank_DV200 = rank(DV200))
+
+plt4 <- ggplot(dv200_rank, aes(x = rank_DV200, y = DV200, color = tissue)) +
+  geom_point(size = 0.5, na.rm = TRUE) +
   geom_hline(yintercept = thresholds$DV200) +
-  theme_bw()
+  theme_bw() +
+  scale_color_viridis(discrete = TRUE, begin = 0.1, end = 0.9) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        title = element_text(face = "bold"),
+        plot.margin = unit(c(0, 0, 0, 20), units = "pt"))
 
 print(plt1 + plt2)
 print(plt3 + plt4)
@@ -676,6 +657,11 @@ counts <- counts[, metadata$specimenID]
 multiqc_stats <- subset(multiqc_stats, specimenID %in% metadata$specimenID)
 fastqc_basic_stats <- subset(fastqc_data$basic_statistics,
                              specimenID %in% metadata$specimenID)
+
+# Undo tissue renames
+metadata <- mutate(metadata, tissue = tissue_orig) |> select(-tissue_orig)
+multiqc_stats <- mutate(multiqc_stats, tissue = tissue_orig) |> select(-tissue_orig)
+fastqc_basic_stats <- mutate(fastqc_basic_stats, tissue = tissue_orig) |> select(-tissue_orig)
 
 # Remove genes that are all 0's
 zeros <- rowSums(counts) == 0

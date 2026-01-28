@@ -88,7 +88,7 @@ Samples fail QC if they have a Phred score \< `{r} configs$thresholds$phred`.
 
 Samples get a QC "warning" if their base content is above `Q3 + 1.5 * IQR` for any base or if their Phred score is below `Q1 - 1.5 * IQR`.
 
-Samples with more than 2 warnings across all QC metrics fail QC.
+Samples with 2 or more warnings across all QC metrics fail QC.
 
 ```{r}
 #| label: validate-fastqc
@@ -104,7 +104,7 @@ Samples with more than 2 warnings across all QC metrics fail QC.
 
 Examine percentage of reads mapped and percentage of reads duplicated.
 
-Samples fail QC if they have \< `{r} thresholds$reads_mapped`% reads mapped or \> `{r} thresholds$reads_duplicated`% duplicated reads.
+Samples fail QC if they have \< `{r} configs$thresholds$reads_mapped`% reads mapped or \> `{r} configs$thresholds$reads_duplicated`% duplicated reads.
 
 Samples get a QC warning if they have less than `Q1 - 1.5 * IQR` mapped reads or more than `Q3 + 3 * IQR` duplicated reads.
 
@@ -136,7 +136,7 @@ Samples whose inferred sex do not match their reported sex are marked as QC fail
 
 ## PCA outliers
 
-Samples were split by tissue and sequencing batch, PCA was run on each group, and outliers were defined as samples falling outside 4 standard deviations of the data along PC1 and PC2.
+Samples were split by tissue and sequencing batch, PCA was run on each group, and outliers were defined as samples falling outside 4 standard deviations of the data along PC1, PC2, and/or PC3.
 
 ```{r}
 #| label: validate-pca
@@ -154,9 +154,9 @@ Samples were marked as QC failures if:
 
 -   Both DV200 and RIN are `NA`
 
--   DV200 \< `{r} thresholds$DV200`
+-   DV200 \< `{r} configs$thresholds$DV200`
 
-    -   or RIN \< `{r} thresholds$RIN`, if DV200 is `NA` for that sample
+    -   or RIN \< `{r} configs$thresholds$RIN`, if DV200 is `NA` for that sample
 
 ```{r}
 #| label: validate-dv200
@@ -182,15 +182,15 @@ Samples were marked as QC failures if:
 #| label: print-final-qc-results
 ```
 
-#### Samples that will be removed
+### Samples that will be removed
 
-Summary
+#### Summary
 
 ```{r}
 #| label: print-qc-failures-summary
 ```
 
-Details
+#### Details
 
 ```{r}
 #| label: print-qc-failures-detail

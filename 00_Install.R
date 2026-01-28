@@ -1,5 +1,5 @@
 install.packages(c("BiocManager", "stringr", "dplyr", "ggplot2", "ggforce",
-                   "patchwork", "viridis", "fastqcr"))
+                   "patchwork", "viridis", "fastqcr", "plotly"))
 
 BiocManager::install(c("edgeR", "cqn"))
 
