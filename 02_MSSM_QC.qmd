@@ -35,11 +35,6 @@ render_for_wiki <- FALSE
 ## Notebook setup
 
 knitr::read_chunk("qc_functions.R")
-
-if (render_for_wiki) {
-  # Code will not be rendered to the Synapse wiki page
-  knitr::opts_chunk$set(echo = FALSE)
-}
 ```
 
 ```{r}

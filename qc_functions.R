@@ -33,9 +33,17 @@ render_for_wiki <- FALSE
 
 # ---- optional-wiki-setup ----
 
-# Prints out a markdown header for the Synapse wiki and a reminder to download
-# the HTML file for better display, but only if render_for_wiki is set to TRUE.
 if (render_for_wiki) {
+  # This resolution and aspect ratio, scaled to ~45% on the wiki, looks good
+  knitr::opts_chunk$set(dpi = 300)
+  knitr::opts_chunk$set(fig.height = 4)
+  knitr::opts_chunk$set(fig.width = 6.5)
+
+  # Code will not be rendered to the Synapse wiki page
+  knitr::opts_chunk$set(echo = FALSE)
+
+  # Prints out a markdown header for the Synapse wiki and a reminder to download
+  # the HTML file for better display, but only if render_for_wiki is set to TRUE.
   dataset_display <- stringr::str_replace(dataset, "_", " / ")
   title <- paste0("#! Diverse Cohorts RNA-Seq QC (", dataset_display, ")")
   cat(title, "\n\n")
