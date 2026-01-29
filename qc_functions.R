@@ -19,6 +19,8 @@ library(plotly)
 
 configs <- config::get(file = "config.yml")
 
+synLogin()
+
 
 # ---- not-run ----
 
@@ -26,13 +28,29 @@ configs <- config::get(file = "config.yml")
 # allow for testing the script directly outside of the QC notebooks.
 dataset <- NULL
 upload_to_synapse <- FALSE
+render_for_wiki <- FALSE
+
+
+# ---- optional-wiki-setup ----
+
+# Prints out a markdown header for the Synapse wiki and a reminder to download
+# the HTML file for better display, but only if render_for_wiki is set to TRUE.
+if (render_for_wiki) {
+  dataset_display <- stringr::str_replace(dataset, "_", " / ")
+  title <- paste0("#! Diverse Cohorts RNA-Seq QC (", dataset_display, ")")
+  cat(title, "\n\n")
+  cat("**Author:** Jaclyn Beck (Sage Bionetworks)", "\n\n")
+  cat("> **Note:** This wiki page shows the output of the R notebook but with",
+      "code and potentially identifying information removed. **Download the",
+      "rendered HTML file** with the `Download Options` button to view the",
+      "notebook with sample-level details, code, and interactive PCA graphs.",
+      "\n\n", "${toc}", "\n\n") # wiki table of contents
+}
 
 
 # ---- download-metadata ----
 
 # Download the individual, biospecimen, and assay metadata
-synLogin()
-
 ind <- synGet(configs$download$individual_metadata_synid,
               downloadLocation = "downloads",
               ifcollision = "overwrite.local")$path |>
@@ -262,14 +280,7 @@ make_bar_plot(metadata, "race")
 
 make_bar_plot(metadata, "isHispanic")
 
-make_bar_plot(metadata, "dataContributionGroup")
-
-make_bar_plot(metadata, "dataContributionGroup", facet_var = "rnaBatch")
-
-make_bar_plot(metadata, "dataContributionGroup", facet_var = "libraryBatch")
-
-make_bar_plot(metadata, "dataContributionGroup", facet_var = "sequencingBatch")
-
+make_bar_plot(metadata, "cohort")
 
 format_histogram_plot <- function(plt) {
   plt + geom_histogram(aes(fill = after_stat(count)), bins = 30, na.rm = TRUE) +
@@ -317,8 +328,7 @@ plt1 <- ggplot(base_content,
               size = 0.5, width = 0.05, na.rm = TRUE) +
   theme_bw() +
   facet_grid(rows = vars(read), cols = vars(tissue)) +
-  scale_fill_viridis(option = "turbo", discrete = TRUE,
-                     begin = 0.1, end = 0.8, alpha = 0.8) +
+  scale_fill_viridis(discrete = TRUE, begin = 0.1, alpha = 0.8) +
   theme(strip.background = element_rect(fill = "#EEEEEE", color = "black"),
         strip.text = element_text(face = "bold"),
         title = element_text(face = "bold")) +
@@ -371,7 +381,7 @@ meta_sub <- subset(metadata, base_content_warn | phred_score_warn | !phred_score
   dplyr::rename(Tissue = tissue, `Specimen ID` = specimenID) |>
   arrange(Tissue, `Specimen ID`)
 
-if (nrow(meta_sub) > 0) {
+if (nrow(meta_sub) > 0 && !render_for_wiki) {
   meta_sub
 }
 
@@ -418,12 +428,12 @@ mqc_plot <- multiqc_stats |>
     )
   )
 
-stat_colors <- c("Pass" = "black", "Warn" = "orange", "Fail" = "red")
+stat_colors <- c("Pass" = "black", "Warn" = "darkorange", "Fail" = "red")
 plt1 <- ggplot(mqc_plot,
                aes(x = tissue, y = samtools_reads_mapped_percent, fill = tissue)) +
   geom_boxplot(outliers = FALSE, width = 0.1) +
   geom_jitter(aes(color = mapped_status),
-              width = 0.3,
+              width = 0.2,
               size = ifelse(mqc_plot$mapped_status == "Pass", 0.5, 1)) +
   theme_bw() +
   theme(legend.position = "none",
@@ -438,7 +448,7 @@ plt2 <- ggplot(mqc_plot,
                aes(x = tissue, y = picard_PERCENT_DUPLICATION, fill = tissue)) +
   geom_boxplot(outliers = FALSE, width = 0.1) +
   geom_jitter(aes(color = duplicated_status),
-              width = 0.3,
+              width = 0.2,
               size = ifelse(mqc_plot$duplicated_status == "Pass", 0.5, 1)) +
   theme_bw() +
   theme(title = element_text(face = "bold"),
@@ -480,7 +490,7 @@ meta_sub <- subset(metadata, reads_mapped_warn | reads_duplicated_warn |
   dplyr::rename(Tissue = tissue, `Specimen ID` = specimenID) |>
   arrange(Tissue, `Specimen ID`)
 
-if (nrow(meta_sub) > 0) {
+if (nrow(meta_sub) > 0 && !render_for_wiki) {
   meta_sub
 }
 
@@ -499,6 +509,13 @@ plts <- sageRNAUtils::plot_sex_mismatch_results(
 
 plts[[1]] <- plts[[1]] + scale_color_viridis(discrete = TRUE,
                                              begin = 0.2, end = 0.8)
+
+# Make the valid points a little lighter so the mismatches stand out more
+if (length(mismatches$mismatches) > 0) {
+  plts[[2]] <- plts[[2]] +
+    scale_color_manual(values = c("FALSE" = "red", "TRUE" = "gray"))
+}
+
 print(plts[[1]] + plts[[2]])
 
 metadata$sex_valid <- !(metadata$specimenID %in% mismatches$mismatches)
@@ -512,7 +529,7 @@ meta_sub <- subset(metadata, !sex_valid) |>
                 Tissue = tissue) |>
   arrange(Tissue, `Specimen ID`)
 
-if (nrow(meta_sub) > 0) {
+if (nrow(meta_sub) > 0 && !render_for_wiki) {
   meta_sub
 }
 
@@ -555,7 +572,11 @@ plts <- lapply(names(results$group_results), function(res_name) {
   return(plt)
 })
 
-htmltools::tagList(plts)
+if (render_for_wiki) {
+  cat("Download HTML notebook for PCA plots.", "\n")
+} else {
+  htmltools::tagList(plts)
+}
 
 metadata$pca_valid <- !(metadata$specimenID %in% results$outliers)
 
@@ -567,7 +588,7 @@ meta_sub <- subset(metadata, !pca_valid) |>
   dplyr::rename(`Specimen ID` = specimenID, Tissue = tissue) |>
   arrange(Tissue, `Specimen ID`)
 
-if (nrow(meta_sub) > 0) {
+if (nrow(meta_sub) > 0 && !render_for_wiki) {
   meta_sub
 }
 
@@ -577,8 +598,8 @@ if (nrow(meta_sub) > 0) {
 thresholds <- configs$thresholds
 
 plt1 <- ggplot(metadata, aes(x = tissue, y = RIN, fill = tissue)) +
-  geom_boxplot(outliers = FALSE, na.rm = TRUE) +
-  geom_jitter(size = 0.5, na.rm = TRUE) +
+  geom_boxplot(outliers = FALSE, na.rm = TRUE, width = 0.5) +
+  geom_jitter(size = 0.5, na.rm = TRUE, width = 0.3) +
   xlab(NULL) +
   theme_bw() +
   scale_fill_viridis(discrete = TRUE, begin = 0.1, end = 0.9, alpha = 0.7) +
@@ -587,8 +608,9 @@ plt1 <- ggplot(metadata, aes(x = tissue, y = RIN, fill = tissue)) +
         title = element_text(face = "bold"))
 
 plt2 <- ggplot(metadata, aes(x = tissue, y = DV200, fill = tissue)) +
-  geom_boxplot(outliers = FALSE, na.rm = TRUE) +
-  geom_jitter(size = 0.5, na.rm = TRUE) +
+  geom_boxplot(outliers = FALSE, na.rm = TRUE, width = 0.5) +
+  geom_jitter(size = 0.5, na.rm = TRUE, width = 0.3) +
+  geom_hline(yintercept = thresholds$DV200, linetype = "dotdash", color = "darkgray") +
   xlab(NULL) +
   theme_bw() +
   scale_fill_viridis(discrete = TRUE, begin = 0.1, end = 0.9, alpha = 0.7) +
@@ -598,6 +620,7 @@ plt2 <- ggplot(metadata, aes(x = tissue, y = DV200, fill = tissue)) +
 
 plt3 <- ggplot(metadata, aes(x = RIN, y = DV200, color = tissue)) +
   geom_jitter(size = 0.5, na.rm = TRUE) +
+  geom_hline(yintercept = thresholds$DV200, linetype = "dotdash", color = "darkgray") +
   theme_bw() +
   scale_color_viridis(discrete = TRUE, begin = 0.1, end = 0.9) +
   theme(legend.position = "none",
@@ -610,7 +633,7 @@ dv200_rank <- metadata |>
 
 plt4 <- ggplot(dv200_rank, aes(x = rank_DV200, y = DV200, color = tissue)) +
   geom_point(size = 0.5, na.rm = TRUE) +
-  geom_hline(yintercept = thresholds$DV200) +
+  geom_hline(yintercept = thresholds$DV200, linetype = "dotdash", color = "darkgray") +
   theme_bw() +
   scale_color_viridis(discrete = TRUE, begin = 0.1, end = 0.9) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1),
@@ -636,7 +659,7 @@ meta_sub <- subset(metadata, !DV200_valid) |>
   dplyr::rename(`Specimen ID` = specimenID, Tissue = tissue) |>
   arrange(Tissue, DV200, RIN)
 
-if (nrow(meta_sub) > 0) {
+if (nrow(meta_sub) > 0 && !render_for_wiki) {
   meta_sub
 }
 
@@ -718,15 +741,20 @@ if (upload_to_synapse) {
 n_passes |>
   as.data.frame() |>
   tidyr::pivot_wider(names_from = Var2, values_from = Freq) |>
-  dplyr::rename(Tissue = Var1)
+  dplyr::rename(Tissue = Var1) |>
+  as.data.frame()
 
 
 # ---- print-qc-failures-summary ----
 
-failures |>
-  group_by(tissue) |>
-  summarize(`Specimen IDs` = paste(str_replace(specimenID, "^X", ""),
-                                   collapse = ", "))
+if (render_for_wiki) {
+  cat("Download HTML notebook for sample-level details.", "\n")
+} else {
+  failures |>
+    group_by(tissue) |>
+    summarize(`Specimen IDs` = paste(str_replace(specimenID, "^X", ""),
+                                     collapse = ", "))
+}
 
 
 # ---- print-qc-failures-detail ----
@@ -766,4 +794,8 @@ failures_detail <- failures |>
   dplyr::rename(Tissue = tissue, Cohort = cohort) |>
   arrange(Tissue, `Specimen ID`)
 
-failures_detail
+if (render_for_wiki) {
+  cat("Download HTML notebook for sample-level details.", "\n")
+} else {
+  failures_detail
+}

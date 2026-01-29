@@ -1,6 +1,6 @@
 ---
 title: "Diverse Cohorts RNA-Seq QC (Mayo / Emory)"
-author: "Jaclyn Beck"
+author: "Jaclyn Beck (Sage Bionetworks)"
 format:
   html:
     embed-resources: true
@@ -11,33 +11,51 @@ editor: visual
 code-fold: true
 ---
 
-# Setup
-
-<details>
-
 ```{r}
 #| cache: false
-#| label: read-chunk
+#| label: setup
 #| include: false
 
-knitr::read_chunk("qc_functions.R")
-
-```
-
-```{r}
-#| label: include-libraries
-#| output: false
-```
-
-```{r}
-#| label: setup
-#| output: false
+## Notebook settings
 
 dataset <- "Mayo_Emory"
 
 # Setting to TRUE will upload the filtered counts file (post-QC) to the harmonization
 # project on Synapse.
 upload_to_synapse <- FALSE
+
+# Setting to TRUE will remove any printouts that contain specimenIDs and will remove
+# code from the render so that the notebook text and graphs can be put on a Synapse 
+# wiki page. Note that the YAML header of this notebook will still need to be manually
+# removed from the wiki if the "knit2synapse" library is used to put it on the wiki, due
+# to how knitr works. 
+render_for_wiki <- FALSE
+
+
+## Notebook setup
+
+knitr::read_chunk("qc_functions.R")
+
+if (render_for_wiki) {
+  # Code will not be rendered to the Synapse wiki page
+  knitr::opts_chunk$set(echo = FALSE)
+}
+```
+
+```{r}
+#| label: optional-wiki-setup
+#| echo: false
+#| results: "asis"
+```
+
+# Setup
+
+<details>
+
+```{r}
+#| label: include-libraries
+#| output: false
+#| message: false
 ```
 
 ## Load files
@@ -76,7 +94,7 @@ FastQC and MultiQC stats
 
 Examine Phred score and average base content at each position of a read.
 
-Samples fail QC if they have a Phred score \< `{r} configs$thresholds$phred`.
+Samples fail QC if they have a Phred score \< `r configs$thresholds$phred`.
 
 Samples get a QC "warning" if their base content is above `Q3 + 1.5 * IQR` for any base or if their Phred score is below `Q1 - 1.5 * IQR`.
 
@@ -86,7 +104,7 @@ Samples with 2 or more warnings across all QC metrics fail QC.
 #| label: validate-fastqc
 ```
 
-**FastQC failures / warnings:** `{r} n_fqc_warn_fail` sample(s)
+**FastQC failures / warnings:** `r n_fqc_warn_fail` sample(s)
 
 ```{r}
 #| label: print-fastqc-results
@@ -96,7 +114,7 @@ Samples with 2 or more warnings across all QC metrics fail QC.
 
 Examine percentage of reads mapped and percentage of reads duplicated.
 
-Samples fail QC if they have \< `{r} configs$thresholds$reads_mapped`% reads mapped or \> `{r} configs$thresholds$reads_duplicated`% duplicated reads.
+Samples fail QC if they have \< `r configs$thresholds$reads_mapped`% reads mapped or \> `r configs$thresholds$reads_duplicated`% duplicated reads.
 
 Samples get a QC warning if they have less than `Q1 - 1.5 * IQR` mapped reads or more than `Q3 + 3 * IQR` duplicated reads.
 
@@ -104,7 +122,7 @@ Samples get a QC warning if they have less than `Q1 - 1.5 * IQR` mapped reads or
 #| label: validate-multiqc
 ```
 
-**MultiQC failures / warnings:** `{r} n_mqc_warn_fail` sample(s)
+**MultiQC failures / warnings:** `r n_mqc_warn_fail` sample(s)
 
 ```{r}
 #| label: print-multiqc-results
@@ -118,9 +136,10 @@ Samples whose inferred sex do not match their reported sex are marked as QC fail
 
 ```{r}
 #| label: validate-sex
+#| warning: false
 ```
 
-**Reported sex vs inferred sex mismatches:** `{r} sum(!metadata$sex_valid)` sample(s)
+**Reported sex vs inferred sex mismatches:** `r sum(!metadata$sex_valid)` sample(s)
 
 ```{r}
 #| label: print-sex-mismatches
@@ -134,7 +153,7 @@ Samples were split by tissue and sequencing batch, PCA was run on each group, an
 #| label: validate-pca
 ```
 
-**PCA outliers:** `{r} sum(!metadata$pca_valid)` sample(s)
+**PCA outliers:** `r sum(!metadata$pca_valid)` sample(s)
 
 ```{r}
 #| label: print-pca-outliers
@@ -146,16 +165,16 @@ Samples were marked as QC failures if:
 
 -   Both DV200 and RIN are `NA`
 
--   DV200 \< `{r} configs$thresholds$DV200`
+-   DV200 \< `r configs$thresholds$DV200`
 
-    -   or RIN \< `{r} configs$thresholds$RIN`, if DV200 is `NA` for that sample
+    -   or RIN \< `r configs$thresholds$RIN`, if DV200 is `NA` for that sample
 
 ```{r}
 #| label: validate-dv200
 #| warning: false
 ```
 
-**Samples with low DV200:** `{r} sum(!metadata$DV200_valid)` sample(s)
+**Samples with low DV200:** `r sum(!metadata$DV200_valid)` sample(s)
 
 ```{r}
 #| label: print-dv200-results
@@ -168,7 +187,7 @@ Samples were marked as QC failures if:
 #| output: false
 ```
 
-**`{r} ncol(counts)`** of **`{r} orig_size`** samples passed QC. Results by tissue:
+**`r ncol(counts)`** of **`r orig_size`** samples passed QC. Results by tissue:
 
 ```{r}
 #| label: print-final-qc-results
