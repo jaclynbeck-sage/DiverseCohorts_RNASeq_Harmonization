@@ -1,7 +1,8 @@
 # Diverse Cohorts RNASeq Harmonization
 
-Code to do quality control and harmonize RNA Seq data from Diverse Cohorts. The
-current outputs of this pipeline are:
+Code to do quality control and harmonize RNA Seq data from the 
+[AMP-AD Diverse Cohorts study](https://adknowledgeportal.synapse.org/Explore/Studies/DetailsPage/StudyDetails?Study=syn51732482). 
+The current outputs of this pipeline are:
 -   count matrices containing only samples that passed QC
 -   CQN-normalized matrices that have been adjusted for gene length and GC content
 
