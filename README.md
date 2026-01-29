@@ -1,4 +1,4 @@
-# DiverseCohorts RNASeq Harmonization
+# Diverse Cohorts RNASeq Harmonization
 
 Code to do quality control and harmonize RNA Seq data from Diverse Cohorts. The
 current outputs of this pipeline are:
